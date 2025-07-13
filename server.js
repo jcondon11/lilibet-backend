@@ -1,7 +1,7 @@
 // Disable SSL verification for development
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// server.js - Production Ready
+// server.js - Production Ready with CORS Fixed
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -74,7 +74,7 @@ const openai = new OpenAI({
   })
 });
 
-// PRODUCTION: Enhanced CORS configuration
+// FIXED: Enhanced CORS configuration with live frontend URL
 const allowedOrigins = [
   'http://localhost:8081',     // Local Expo web
   'http://localhost:19006',    // Alternative Expo web port
@@ -82,8 +82,12 @@ const allowedOrigins = [
   'http://127.0.0.1:8081',     // Alternative localhost format
   'http://127.0.0.1:19006',
   'http://127.0.0.1:3000',
-  // Add your production domains here (we'll update this later)
-  process.env.FRONTEND_URL,    // Dynamic frontend URL from environment
+  // LIVE FRONTEND URLS
+  'https://lilibet-mobile.vercel.app',                                    // Primary Vercel URL
+  'https://lilibet-mobile-git-main-jerry-condons-projects.vercel.app',    // Git branch URL
+  'https://lilibet-mobile-l004s9jml-jerry-condons-projects.vercel.app',   // Deployment URL
+  // Dynamic frontend URL from environment
+  process.env.FRONTEND_URL,
 ];
 
 // Remove undefined values and duplicates
@@ -95,9 +99,11 @@ app.use(cors({
     if (!origin) return callback(null, true);
     
     if (cleanOrigins.includes(origin)) {
+      console.log('✅ CORS allowed for origin:', origin);
       callback(null, true);
     } else {
-      console.log('CORS blocked origin:', origin);
+      console.log('❌ CORS blocked origin:', origin);
+      console.log('🔍 Allowed origins:', cleanOrigins);
       callback(new Error('CORS policy violation'));
     }
   },
@@ -941,7 +947,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
   console.log(`🎤 Speech-to-text endpoint ready at /api/speech-to-text`);
   console.log(`📱 Supports M4A (mobile) and WebM (web) audio formats`);
-  console.log(`🌐 Production CORS configured`);
+  console.log(`🌐 CORS configured for live frontend:`);
+  console.log(`   ✅ https://lilibet-mobile.vercel.app`);
+  console.log(`   ✅ All Vercel deployment URLs`);
   console.log(`🧠 Smart adaptive responses enabled`);
   
   const uploadsDir = path.join(__dirname, 'uploads');

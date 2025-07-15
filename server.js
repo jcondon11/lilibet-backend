@@ -105,10 +105,11 @@ const allowedOrigins = [
   'http://127.0.0.1:8081',     // Alternative localhost format
   'http://127.0.0.1:19006',
   'http://127.0.0.1:3000',
-  // LIVE FRONTEND URLS
+  // LIVE FRONTEND URLS - ALL VERCEL PATTERNS
   'https://lilibet-mobile.vercel.app',                                    // Primary Vercel URL
   'https://lilibet-mobile-git-main-jerry-condons-projects.vercel.app',    // Git branch URL
-  'https://lilibet-mobile-l004s9jml-jerry-condons-projects.vercel.app',   // Deployment URL
+  'https://lilibet-mobile-l004s9jml-jerry-condons-projects.vercel.app',   // Old deployment URL
+  'https://lilibet-mobile-on2sexkp3-jerry-condons-projects.vercel.app',   // New deployment URL
   // Dynamic frontend URL from environment
   process.env.FRONTEND_URL,
 ];

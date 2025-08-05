@@ -1,0 +1,14 @@
+[phases.setup]
+nixPkgs = ['nodejs_18', 'npm-9_x', 'python3', 'gcc', 'sqlite']
+
+[phases.install]
+cmds = [
+  'npm ci --include=dev',
+  'npm rebuild sqlite3 --build-from-source'
+]
+
+[phases.build]
+cmds = ['echo "Build phase completed"']
+
+[start]
+cmd = 'node server.js'

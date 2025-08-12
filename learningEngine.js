@@ -210,7 +210,7 @@ const callOpenAILearningMode = async (prompt, conversationHistory = []) => {
     ];
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-mini', // UPGRADED TO GPT-5-MINI!
       messages: messages,
       max_tokens: 500,
       temperature: 0.7, // Slightly creative but focused

@@ -384,8 +384,8 @@ app.get('/api/models', (req, res) => {
   const models = {
     openai: {
       available: !!process.env.OPENAI_API_KEY,
-      name: 'OpenAI GPT-4o-mini',
-      description: 'Advanced AI optimized for practice, challenges, and quick responses',
+      name: 'OpenAI GPT-5-mini',
+      description: 'Latest advanced AI optimized for educational tasks with improved reasoning',
       bestFor: ['practice', 'challenge', 'review']
     },
     claude: {

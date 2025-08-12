@@ -1,7 +1,7 @@
 {
   "name": "lilibet-tutor-backend",
-  "version": "2.0.0",
-  "description": "Backend API for Lilibet AI Tutor with Authentication - Teaching through questioning, not telling",
+  "version": "2.1.0",
+  "description": "Backend API for Lilibet AI Tutor with Smart Learning Engine - Teaching through intelligent mode detection and optimal AI routing",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -17,9 +17,13 @@
     "claude",
     "openai",
     "authentication",
-    "postgresql"
+    "postgresql",
+    "learning-engine",
+    "smart-routing",
+    "study-mode",
+    "guided-learning"
   ],
-  "author": "Your Name",
+  "author": "Jerry Condon",
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.9",
@@ -38,5 +42,13 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jcondon11/lilibet-backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jcondon11/lilibet-backend/issues"
+  },
+  "homepage": "https://github.com/jcondon11/lilibet-backend#readme"
 }

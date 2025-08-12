@@ -2,9 +2,6 @@
 // Implements intelligent learning mode detection and routing
 // Uses proven techniques from OpenAI Study Mode and Anthropic Learning Mode
 
-// IMPORTANT: Don't require OpenAI or Anthropic here to avoid circular dependencies
-// They will be passed in from the main server
-
 /**
  * LEARNING MODES - Based on OpenAI Study Mode and Claude Learning Mode research
  */
@@ -180,9 +177,9 @@ Check their understanding and reinforce learning.`
 /**
  * Call OpenAI with learning-optimized prompt
  */
-const callOpenAILearningMode = async (prompt, conversationHistory = []) => {
-  if (!openai) {
-    throw new Error('OpenAI not configured');
+const callOpenAILearningMode = async (client, prompt, conversationHistory = []) => {
+  if (!client) {
+    throw new Error('OpenAI client not provided');
   }
 
   try {
@@ -192,8 +189,8 @@ const callOpenAILearningMode = async (prompt, conversationHistory = []) => {
       ...conversationHistory.slice(-6), // Keep last 6 messages for context
     ];
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-5-mini', // UPGRADED TO GPT-5-MINI!
+    const response = await client.chat.completions.create({
+      model: 'gpt-5-mini',
       messages: messages,
       max_tokens: 500,
       temperature: 0.7, // Slightly creative but focused
@@ -209,9 +206,9 @@ const callOpenAILearningMode = async (prompt, conversationHistory = []) => {
 /**
  * Call Claude with learning-optimized prompt
  */
-const callClaudeLearningMode = async (prompt, conversationHistory = []) => {
-  if (!claude) {
-    throw new Error('Claude not configured');
+const callClaudeLearningMode = async (client, prompt, conversationHistory = []) => {
+  if (!client) {
+    throw new Error('Claude client not provided');
   }
 
   try {
@@ -221,7 +218,7 @@ const callClaudeLearningMode = async (prompt, conversationHistory = []) => {
       content: msg.content
     }));
 
-    const response = await claude.messages.create({
+    const response = await client.messages.create({
       model: 'claude-3-5-haiku-20241022',
       max_tokens: 500,
       system: prompt,
@@ -240,12 +237,15 @@ const callClaudeLearningMode = async (prompt, conversationHistory = []) => {
  */
 const processLearningInteraction = async (userInput, options = {}) => {
   try {
-    const {
-      subject = 'general',
-      ageGroup = 'middle',
-      conversationHistory = [],
-      parentalSettings = null
-    } = options;
+    // Extract options with proper defaults
+    const subject = options.subject || 'general';
+    const ageGroup = options.ageGroup || 'middle';
+    const conversationHistory = options.conversationHistory || [];
+    const parentalSettings = options.parentalSettings || null;
+    const openaiClient = options.openaiClient || null;
+    const claudeClient = options.claudeClient || null;
+
+    console.log(`🔧 Learning engine received - OpenAI: ${!!openaiClient}, Claude: ${!!claudeClient}`);
 
     // Step 1: Detect optimal learning mode
     const learningMode = detectLearningMode(userInput, conversationHistory, ageGroup);
@@ -261,17 +261,9 @@ const processLearningInteraction = async (userInput, options = {}) => {
     const optimalModel = chooseOptimalModel(learningMode, availableModels);
     console.log(`🤖 Using model: ${optimalModel} (OpenAI: ${availableModels.openai}, Claude: ${availableModels.claude})`);
 
-    // Step 4: Validate we have the chosen model available
-    if (optimalModel === 'claude' && !claudeClient) {
-      console.log('⚠️ Claude not available, falling back to OpenAI');
-      if (!openaiClient) {
-        throw new Error('No AI models available');
-      }
-    } else if (optimalModel === 'openai' && !openaiClient) {
-      console.log('⚠️ OpenAI not available, falling back to Claude');
-      if (!claudeClient) {
-        throw new Error('No AI models available');
-      }
+    // Step 4: Validate we have at least one model available
+    if (!openaiClient && !claudeClient) {
+      throw new Error('No AI models available');
     }
 
     // Step 5: Generate learning-optimized prompt

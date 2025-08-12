@@ -1,15 +1,64 @@
-// learningEngine.js - Smart Learning Intelligence System for Lilibet
-// Implements intelligent learning mode detection and routing
-// Uses proven techniques from OpenAI Study Mode and Anthropic Learning Mode
-
+// server.js - Enhanced with Smart Learning Engine
+// Integrates intelligent learning mode detection and AI model routing
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 const { OpenAI } = require('openai');
+require('dotenv').config();
 
-// Initialize OpenAI client
+// Import existing authentication system
+const {
+  initializeDatabase,
+  authenticateToken,
+  registerUser,
+  loginUser,
+  getUserProfile,
+  saveConversation,
+  getUserConversations,
+  getConversation,
+  updateConversation,
+  logoutUser
+} = require('./auth');
+
+// Import NEW learning engine
+const {
+  LEARNING_MODES,
+  detectLearningMode,
+  chooseOptimalModel,
+  processLearningInteraction,
+  analyzeLearningEffectiveness
+} = require('./learningEngine');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Initialize database on startup
+initializeDatabase();
+
+// Configure CORS for production and development
+const corsOptions = {
+  origin: [
+    'http://localhost:8081',
+    'http://localhost:19006', 
+    'https://lilibet-mobile.vercel.app',
+    /\.vercel\.app$/,
+    /\.railway\.app$/
+  ],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Initialize OpenAI
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 }) : null;
 
-// Anthropic Claude integration (if available)
+// Initialize Claude (optional)
 let claude = null;
 if (process.env.ANTHROPIC_API_KEY) {
   try {
@@ -17,381 +66,483 @@ if (process.env.ANTHROPIC_API_KEY) {
     claude = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
+    console.log('🤖 Claude initialized successfully');
   } catch (error) {
     console.log('📝 Claude not available, using OpenAI only');
   }
 }
 
-/**
- * LEARNING MODES - Based on OpenAI Study Mode and Claude Learning Mode research
- */
-const LEARNING_MODES = {
-  DISCOVERY: 'discovery',      // Deep exploration with Socratic questioning (Claude best)
-  PRACTICE: 'practice',        // Quick drills and skill building (OpenAI best)  
-  EXPLANATION: 'explanation',  // Concept understanding with examples (Claude best)
-  CHALLENGE: 'challenge',      // Problem-solving and application (OpenAI best)
-  REVIEW: 'review'            // Knowledge checking and reinforcement (OpenAI best)
-};
-
-/**
- * Analyze student input to determine optimal learning mode
- */
-const detectLearningMode = (userInput, conversationHistory = [], studentAge = 'middle') => {
-  const input = userInput.toLowerCase();
-  
-  // Keywords that indicate different learning needs
-  const discoveryKeywords = ['why', 'how does', 'what if', 'explain', 'understand', 'confused', "don't get"];
-  const practiceKeywords = ['practice', 'drill', 'exercise', 'quiz', 'test me', 'more problems'];
-  const explanationKeywords = ['what is', 'define', 'meaning', 'concept', 'theory', 'principle'];
-  const challengeKeywords = ['solve', 'problem', 'challenge', 'harder', 'difficult', 'apply'];
-  const reviewKeywords = ['review', 'check', 'correct', 'grade', 'feedback', 'did i get'];
-
-  // Check for explicit mode requests
-  if (discoveryKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.DISCOVERY;
-  }
-  if (practiceKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.PRACTICE;
-  }
-  if (explanationKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.EXPLANATION;
-  }
-  if (challengeKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.CHALLENGE;
-  }
-  if (reviewKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.REVIEW;
-  }
-
-  // Analyze conversation context
-  if (conversationHistory.length > 3) {
-    const recentMessages = conversationHistory.slice(-3);
-    const hasQuestions = recentMessages.some(msg => 
-      msg.role === 'assistant' && msg.content.includes('?')
-    );
-    
-    if (hasQuestions) {
-      return LEARNING_MODES.DISCOVERY; // Continue Socratic questioning
+// Set up multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = 'uploads/';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
     }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
   }
+});
 
-  // Default based on age and input complexity
-  const wordCount = userInput.split(' ').length;
-  if (wordCount > 15) {
-    return LEARNING_MODES.EXPLANATION; // Long questions need explanation
-  }
-  
-  return LEARNING_MODES.DISCOVERY; // Default to discovery learning
-};
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 25 * 1024 * 1024 } // 25MB limit
+});
 
-/**
- * Choose optimal AI model for the learning mode
- */
-const chooseOptimalModel = (learningMode) => {
-  // Based on strengths observed in Study Mode vs Learning Mode
-  switch (learningMode) {
-    case LEARNING_MODES.DISCOVERY:
-    case LEARNING_MODES.EXPLANATION:
-      return claude ? 'claude' : 'openai'; // Claude excels at reasoning and explanation
+// =================
+// AUTHENTICATION ENDPOINTS
+// =================
+
+app.post('/api/auth/register', registerUser);
+app.post('/api/auth/login', loginUser);
+app.get('/api/auth/profile', authenticateToken, getUserProfile);
+app.post('/api/auth/logout', authenticateToken, logoutUser);
+
+// =================
+// CONVERSATION ENDPOINTS
+// =================
+
+app.get('/api/conversations', authenticateToken, getUserConversations);
+app.get('/api/conversations/:id', authenticateToken, getConversation);
+app.put('/api/conversations/:id', authenticateToken, updateConversation);
+
+// =================
+// ENHANCED LEARNING ENGINE ENDPOINTS
+// =================
+
+// Main tutoring endpoint with smart learning engine
+app.post('/api/tutor', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      message, 
+      subject = 'general', 
+      conversationId = null,
+      forceLearningMode = null // Optional: force specific learning mode
+    } = req.body;
     
-    case LEARNING_MODES.PRACTICE:
-    case LEARNING_MODES.CHALLENGE:
-    case LEARNING_MODES.REVIEW:
-      return 'openai'; // OpenAI better for quick responses and problem-solving
-    
-    default:
-      return openai ? 'openai' : 'claude'; // Fallback to available model
-  }
-};
+    const userId = req.user.id;
 
-/**
- * Generate learning-optimized prompts based on mode
- */
-const generateLearningPrompt = (learningMode, subject, ageGroup, userInput, conversationHistory = []) => {
-  const ageContext = {
-    'elementary': 'a curious elementary school student (ages 6-11)',
-    'middle': 'an engaged middle school student (ages 11-14)', 
-    'high': 'a motivated high school student (ages 14-18)',
-    'adult': 'an adult learner'
-  };
-
-  const studentDescription = ageContext[ageGroup] || ageContext['middle'];
-  
-  // Base instruction that mimics Study Mode behavior
-  const baseInstruction = `You are Lilibet, an educational AI tutor specializing in guided learning. You're helping ${studentDescription} learn ${subject}. Your goal is to guide learning through questioning and discovery, not just provide answers.`;
-
-  const modeInstructions = {
-    [LEARNING_MODES.DISCOVERY]: `
-${baseInstruction}
-
-DISCOVERY MODE - Use Socratic questioning:
-- Ask 2-3 guiding questions that lead the student to discover the answer
-- Use questions like "What do you think might happen if...?" or "How does this connect to what you already know?"
-- If they're stuck, provide a small hint and ask another question
-- Encourage critical thinking with "What evidence supports that?" or "Why do you think that's true?"
-- Never give direct answers - always guide them to the solution
-
-Current question: "${userInput}"
-Guide them to discover the answer through thoughtful questions.`,
-
-    [LEARNING_MODES.PRACTICE]: `
-${baseInstruction}
-
-PRACTICE MODE - Step-by-step skill building:
-- Break the problem into smaller, manageable steps
-- Provide one step at a time and wait for student response
-- Offer gentle correction if they make mistakes
-- Give encouragement and positive reinforcement
-- Create similar practice problems to reinforce learning
-- Ask "Can you try the next step?" or "What would you do next?"
-
-Current practice request: "${userInput}"
-Help them build skills through guided practice.`,
-
-    [LEARNING_MODES.EXPLANATION]: `
-${baseInstruction}
-
-EXPLANATION MODE - Build understanding with connections:
-- Start with what they already know and build from there
-- Use analogies and real-world examples appropriate for their age
-- Break complex concepts into digestible parts
-- Connect new ideas to previously learned concepts
-- Ask understanding checks like "Does this make sense so far?"
-- Use visual descriptions and concrete examples
-
-Current concept to explain: "${userInput}"
-Help them understand by connecting to familiar ideas.`,
-
-    [LEARNING_MODES.CHALLENGE]: `
-${baseInstruction}
-
-CHALLENGE MODE - Problem-solving application:
-- Present the problem and ask how they would approach it
-- Guide them through problem-solving strategies
-- Ask "What's your first step?" or "What information do you need?"
-- If stuck, provide strategic hints, not direct answers
-- Encourage multiple solution approaches
-- Celebrate problem-solving process, not just correct answers
-
-Current challenge: "${userInput}"
-Guide them through systematic problem-solving.`,
-
-    [LEARNING_MODES.REVIEW]: `
-${baseInstruction}
-
-REVIEW MODE - Knowledge checking and reinforcement:
-- Ask questions to check their understanding
-- Provide immediate feedback on their responses
-- Identify knowledge gaps and address them
-- Create quick review questions based on the topic
-- Summarize key points they've learned
-- Build confidence through positive reinforcement
-
-Current review topic: "${userInput}"
-Check their understanding and reinforce learning.`
-  };
-
-  return modeInstructions[learningMode] || modeInstructions[LEARNING_MODES.DISCOVERY];
-};
-
-/**
- * Call OpenAI with learning-optimized prompt
- */
-const callOpenAILearningMode = async (prompt, conversationHistory = []) => {
-  if (!openai) {
-    throw new Error('OpenAI not configured');
-  }
-
-  try {
-    // Prepare messages with learning context
-    const messages = [
-      { role: 'system', content: prompt },
-      ...conversationHistory.slice(-6), // Keep last 6 messages for context
-    ];
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-5-mini', // UPGRADED TO GPT-5-MINI!
-      messages: messages,
-      max_tokens: 500,
-      temperature: 0.7, // Slightly creative but focused
-    });
-
-    return response.choices[0].message.content;
-  } catch (error) {
-    console.error('OpenAI learning mode error:', error);
-    throw error;
-  }
-};
-
-/**
- * Call Claude with learning-optimized prompt
- */
-const callClaudeLearningMode = async (prompt, conversationHistory = []) => {
-  if (!claude) {
-    throw new Error('Claude not configured');
-  }
-
-  try {
-    // Prepare conversation for Claude
-    const messages = conversationHistory.slice(-6).map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
-
-    const response = await claude.messages.create({
-      model: 'claude-3-5-haiku-20241022',
-      max_tokens: 500,
-      system: prompt,
-      messages: messages,
-    });
-
-    return response.content[0].text;
-  } catch (error) {
-    console.error('Claude learning mode error:', error);
-    throw error;
-  }
-};
-
-/**
- * Main learning engine function - intelligently routes to best learning approach
- */
-const processLearningInteraction = async (userInput, options = {}) => {
-  try {
-    const {
-      subject = 'general',
-      ageGroup = 'middle',
-      conversationHistory = [],
-      parentalSettings = null
-    } = options;
-
-    // Step 1: Detect optimal learning mode
-    const learningMode = detectLearningMode(userInput, conversationHistory, ageGroup);
-    console.log(`🎯 Learning mode detected: ${learningMode}`);
-
-    // Step 2: Choose optimal AI model for this learning mode
-    const optimalModel = chooseOptimalModel(learningMode);
-    console.log(`🤖 Using model: ${optimalModel}`);
-
-    // Step 3: Generate learning-optimized prompt
-    const learningPrompt = generateLearningPrompt(
-      learningMode, 
-      subject, 
-      ageGroup, 
-      userInput, 
-      conversationHistory
-    );
-
-    // Step 4: Apply parental controls if needed
-    let finalPrompt = learningPrompt;
-    if (parentalSettings && parentalSettings.restrictedTopics) {
-      finalPrompt += `\n\nIMPORTANT: Avoid these restricted topics: ${parentalSettings.restrictedTopics.join(', ')}. Keep content appropriate for ${ageGroup} age group.`;
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Step 5: Add user message to conversation
-    const updatedHistory = [
+    console.log(`🎓 Learning request from user ${userId}: "${message.substring(0, 50)}..."`);
+
+    // Get user profile for age-appropriate responses
+    let ageGroup = 'middle';
+    try {
+      // Create a mock response object that matches what getUserProfile expects
+      const mockRes = {
+        json: (data) => data,
+        status: (code) => ({ json: (data) => data })
+      };
+      const userProfile = await getUserProfile(req, mockRes, () => {});
+      ageGroup = userProfile?.user?.ageGroup || 'middle';
+    } catch (error) {
+      console.log('📝 Using default age group (middle) due to profile error');
+      ageGroup = 'middle';
+    }
+
+    // Get conversation history if continuing existing conversation
+    let conversationHistory = [];
+    if (conversationId) {
+      try {
+        // Create mock response for getConversation
+        const mockRes = {
+          json: (data) => data,
+          status: (code) => ({ json: (data) => data })
+        };
+        const conversation = await getConversation(
+          { params: { id: conversationId }, user: req.user }, 
+          mockRes, 
+          () => {}
+        );
+        conversationHistory = conversation?.messages || [];
+      } catch (error) {
+        console.log('📝 Starting new conversation (could not load existing)');
+      }
+    }
+
+    // Optional: Get parental settings (if implemented)
+    let parentalSettings = null;
+    // TODO: Implement parental settings retrieval
+    // parentalSettings = await getParentalSettings(userId);
+
+    // Process through smart learning engine
+    const learningResult = await processLearningInteraction(message, {
+      subject,
+      ageGroup,
+      conversationHistory,
+      parentalSettings,
+      forceLearningMode
+    });
+
+    const response = learningResult.response;
+    const metadata = learningResult.metadata;
+
+    console.log(`🤖 Learning response generated using ${metadata.modelUsed} in ${metadata.learningMode} mode`);
+
+    // Save conversation with enhanced metadata
+    try {
+      const newMessages = [
+        ...conversationHistory,
+        { role: 'user', content: message, timestamp: new Date().toISOString() },
+        { 
+          role: 'assistant', 
+          content: response, 
+          timestamp: new Date().toISOString(),
+          metadata: metadata // Store learning metadata
+        }
+      ];
+
+      let saveResult;
+      if (conversationId) {
+        // Update existing conversation - create proper mock response
+        const mockRes = {
+          json: (data) => {
+            console.log('💾 Conversation updated successfully');
+            return data;
+          },
+          status: (code) => ({ 
+            json: (data) => {
+              console.log('💾 Conversation update response:', data);
+              return data;
+            }
+          })
+        };
+        
+        await updateConversation(
+          { 
+            params: { id: conversationId }, 
+            body: { messages: newMessages }, 
+            user: req.user 
+          },
+          mockRes,
+          () => {}
+        );
+      } else {
+        // Create new conversation - create proper mock response  
+        const mockRes = {
+          json: (data) => {
+            console.log('💾 New conversation created successfully');
+            return data;
+          },
+          status: (code) => ({ 
+            json: (data) => {
+              console.log('💾 New conversation response:', data);
+              return data;
+            }
+          })
+        };
+        
+        await saveConversation(
+          {
+            body: {
+              subject,
+              messages: newMessages,
+              title: `${subject} - ${new Date().toLocaleDateString()}`
+            },
+            user: req.user
+          },
+          mockRes,
+          () => {}
+        );
+      }
+
+      console.log('💾 Enhanced conversation saved with learning metadata');
+    } catch (saveError) {
+      console.error('💾 Error saving conversation:', saveError);
+      // Continue even if save fails
+    }
+
+    // Analyze learning effectiveness
+    const learningAnalysis = analyzeLearningEffectiveness([
       ...conversationHistory,
-      { role: 'user', content: userInput }
-    ];
+      { role: 'user', content: message },
+      { role: 'assistant', content: response }
+    ]);
 
-    // Step 6: Call optimal AI model
-    let response;
-    if (optimalModel === 'claude' && claude) {
-      response = await callClaudeLearningMode(finalPrompt, updatedHistory);
-    } else if (openai) {
-      response = await callOpenAILearningMode(finalPrompt, updatedHistory);
-    } else {
-      throw new Error('No AI models available');
-    }
-
-    // Step 7: Return enhanced response with metadata
-    return {
+    // Send enhanced response
+    res.json({
       response,
       metadata: {
-        learningMode,
-        modelUsed: optimalModel,
-        subject,
-        ageGroup,
+        ...metadata,
+        learningAnalysis,
+        conversationId: conversationId || 'new',
         timestamp: new Date().toISOString()
       }
-    };
+    });
 
   } catch (error) {
-    console.error('Learning engine error:', error);
+    console.error('🚨 Learning engine error:', error);
     
     // Fallback to basic response
-    return {
-      response: "I'm having trouble right now, but I'm here to help you learn! Could you ask your question in a different way?",
+    res.status(500).json({
+      error: 'Something went wrong with the learning engine',
+      response: "I'm having some technical difficulties, but I'm still here to help you learn! Could you try asking your question again?",
       metadata: {
         learningMode: 'fallback',
         modelUsed: 'none',
         error: error.message,
         timestamp: new Date().toISOString()
       }
-    };
+    });
   }
-};
+});
 
-/**
- * Analyze learning effectiveness from conversation
- */
-const analyzeLearningEffectiveness = (conversationHistory) => {
-  if (!conversationHistory || conversationHistory.length < 4) {
-    return {
-      engagement: 'insufficient_data',
-      understanding: 'unknown',
-      recommendations: ['Continue conversation to assess learning']
-    };
+// Learning mode detection endpoint
+app.post('/api/learning/detect-mode', authenticateToken, async (req, res) => {
+  try {
+    const { message, conversationHistory = [], ageGroup = 'middle' } = req.body;
+    
+    const detectedMode = detectLearningMode(message, conversationHistory, ageGroup);
+    const optimalModel = chooseOptimalModel(detectedMode);
+    
+    res.json({
+      detectedMode,
+      optimalModel,
+      availableModes: Object.values(LEARNING_MODES),
+      recommendation: `Best approach: ${detectedMode} mode using ${optimalModel}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to detect learning mode' });
   }
+});
 
-  const studentMessages = conversationHistory.filter(msg => msg.role === 'user');
-  const tutorMessages = conversationHistory.filter(msg => msg.role === 'assistant');
+// Learning analytics endpoint
+app.get('/api/learning/analytics/:conversationId', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    
+    // Get conversation
+    const conversation = await getConversation(
+      { params: { id: conversationId }, user: req.user },
+      { json: (data) => data },
+      () => {}
+    );
+    
+    if (!conversation?.messages) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    
+    // Analyze learning effectiveness
+    const analysis = analyzeLearningEffectiveness(conversation.messages);
+    
+    // Extract learning modes used
+    const modesUsed = conversation.messages
+      .filter(msg => msg.role === 'assistant' && msg.metadata?.learningMode)
+      .map(msg => msg.metadata.learningMode);
+    
+    const modeStats = modesUsed.reduce((acc, mode) => {
+      acc[mode] = (acc[mode] || 0) + 1;
+      return acc;
+    }, {});
+    
+    res.json({
+      conversationId,
+      learningAnalysis: analysis,
+      modesUsed: modeStats,
+      totalInteractions: conversation.messages.filter(msg => msg.role === 'user').length,
+      subject: conversation.subject,
+      createdAt: conversation.created_at
+    });
+    
+  } catch (error) {
+    console.error('Learning analytics error:', error);
+    res.status(500).json({ error: 'Failed to generate learning analytics' });
+  }
+});
 
-  // Analyze engagement
-  const avgStudentLength = studentMessages.reduce((sum, msg) => sum + msg.content.length, 0) / studentMessages.length;
-  const engagement = avgStudentLength > 20 ? 'high' : avgStudentLength > 10 ? 'medium' : 'low';
+// =================
+// EXISTING ENDPOINTS (unchanged)
+// =================
 
-  // Analyze understanding signals
-  const understandingSignals = {
-    questions: studentMessages.some(msg => msg.content.includes('?')),
-    confusion: studentMessages.some(msg => 
-      msg.content.toLowerCase().includes('confused') || 
-      msg.content.toLowerCase().includes("don't understand")
-    ),
-    confidence: studentMessages.some(msg => 
-      msg.content.toLowerCase().includes('i think') || 
-      msg.content.toLowerCase().includes('maybe')
-    )
+// Speech to text endpoint
+app.post('/api/speech-to-text', upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+
+    if (!openai) {
+      return res.status(503).json({ error: 'OpenAI not configured' });
+    }
+
+    console.log(`🎤 Processing audio file: ${req.file.filename}`);
+    
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(req.file.path),
+      model: 'whisper-1',
+    });
+
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+
+    console.log(`🎯 Transcribed: "${transcription.text}"`);
+    res.json({ transcription: transcription.text });
+
+  } catch (error) {
+    console.error('🎤 Speech-to-text error:', error);
+    
+    // Clean up file if error occurred
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({ 
+      error: 'Speech recognition failed. Could you try again?',
+      details: error.message 
+    });
+  }
+});
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Lilibet Enhanced Learning Engine is running!',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString(),
+    models: {
+      openai: !!process.env.OPENAI_API_KEY,
+      claude: !!claude
+    },
+    features: {
+      authentication: true,
+      conversationPersistence: true,
+      smartLearningEngine: true,
+      learningModeDetection: true,
+      intelligentModelRouting: true,
+      learningAnalytics: true
+    }
+  });
+});
+
+// Model availability
+app.get('/api/models', (req, res) => {
+  const models = {
+    openai: {
+      available: !!process.env.OPENAI_API_KEY,
+      name: 'OpenAI GPT-5-mini',
+      description: 'Latest advanced AI optimized for educational tasks with improved reasoning',
+      bestFor: ['practice', 'challenge', 'review']
+    },
+    claude: {
+      available: !!claude,
+      name: 'Anthropic Claude 3.5 Haiku',
+      description: 'Thoughtful AI excellent at reasoning and Socratic questioning',
+      bestFor: ['discovery', 'explanation']
+    }
   };
+  
+  res.json({ 
+    models,
+    learningModes: Object.values(LEARNING_MODES),
+    smartRouting: true
+  });
+});
 
-  let understanding = 'progressing';
-  if (understandingSignals.confusion) understanding = 'struggling';
-  if (understandingSignals.confidence && !understandingSignals.confusion) understanding = 'good';
+// Learning modes info endpoint
+app.get('/api/learning/modes', (req, res) => {
+  res.json({
+    modes: {
+      [LEARNING_MODES.DISCOVERY]: {
+        name: 'Discovery Learning',
+        description: 'Socratic questioning to guide discovery',
+        bestModel: 'claude',
+        icon: '🔍',
+        example: 'Asking "Why do you think that happens?" to explore concepts'
+      },
+      [LEARNING_MODES.PRACTICE]: {
+        name: 'Practice Mode',
+        description: 'Step-by-step skill building and drills',
+        bestModel: 'openai',
+        icon: '💪',
+        example: 'Breaking down math problems into manageable steps'
+      },
+      [LEARNING_MODES.EXPLANATION]: {
+        name: 'Explanation Mode',
+        description: 'Clear explanations with examples and analogies',
+        bestModel: 'claude',
+        icon: '💡',
+        example: 'Explaining photosynthesis using familiar analogies'
+      },
+      [LEARNING_MODES.CHALLENGE]: {
+        name: 'Challenge Mode',
+        description: 'Problem-solving and application of knowledge',
+        bestModel: 'openai',
+        icon: '🎯',
+        example: 'Guiding through complex word problems'
+      },
+      [LEARNING_MODES.REVIEW]: {
+        name: 'Review Mode',
+        description: 'Knowledge checking and reinforcement',
+        bestModel: 'openai',
+        icon: '📋',
+        example: 'Quick quiz questions to check understanding'
+      }
+    },
+    autoDetection: true,
+    manualOverride: true
+  });
+});
 
-  // Generate recommendations
-  const recommendations = [];
-  if (engagement === 'low') {
-    recommendations.push('Try more interactive questions to increase engagement');
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    name: 'Lilibet Enhanced Learning Engine',
+    version: '2.1.0',
+    status: 'healthy',
+    description: 'AI tutor with intelligent learning mode detection and optimal model routing',
+    endpoints: {
+      health: '/health',
+      speechToText: '/api/speech-to-text',
+      tutor: '/api/tutor',
+      models: '/api/models',
+      learningModes: '/api/learning/modes',
+      detectMode: '/api/learning/detect-mode',
+      analytics: '/api/learning/analytics/:conversationId',
+      register: '/api/auth/register',
+      login: '/api/auth/login',
+      profile: '/api/auth/profile',
+      conversations: '/api/conversations'
+    },
+    features: {
+      openai: !!process.env.OPENAI_API_KEY,
+      claude: !!claude,
+      speechToText: true,
+      smartLearningEngine: true,
+      learningModeDetection: true,
+      intelligentModelRouting: true,
+      learningAnalytics: true,
+      userAuthentication: true,
+      conversationPersistence: true
+    }
+  });
+});
+
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌟 Lilibet Enhanced Learning Engine running on port ${PORT}`);
+  console.log(`🎯 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🤖 Claude API Key: ${process.env.ANTHROPIC_API_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🔐 Authentication: ✅ Enabled`);
+  console.log(`💾 Database: ✅ PostgreSQL initialized`);
+  console.log(`🧠 Smart Learning Engine: ✅ Active`);
+  console.log(`🎯 Learning Mode Detection: ✅ Active`);
+  console.log(`🔀 Intelligent Model Routing: ✅ Active`);
+  console.log(`📊 Learning Analytics: ✅ Active`);
+  console.log(`📱 Supports M4A (mobile) and WebM (web) audio formats`);
+  console.log(`🌐 CORS configured for frontend URLs`);
+  
+  const uploadsDir = path.join(__dirname, 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
   }
-  if (understanding === 'struggling') {
-    recommendations.push('Break down concepts into smaller steps');
-    recommendations.push('Use more concrete examples and analogies');
-  }
-  if (understanding === 'good') {
-    recommendations.push('Ready for more challenging questions');
-    recommendations.push('Consider introducing related concepts');
-  }
+});
 
-  return {
-    engagement,
-    understanding,
-    recommendations
-  };
-};
-
-module.exports = {
-  LEARNING_MODES,
-  detectLearningMode,
-  chooseOptimalModel,
-  processLearningInteraction,
-  analyzeLearningEffectiveness
-};
+module.exports = app;

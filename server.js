@@ -130,6 +130,7 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
     }
 
     console.log(`🎓 Learning request from user ${userId}: "${message.substring(0, 50)}..."`);
+    console.log(`🔧 Debug - OpenAI available: ${!!openai}, Claude available: ${!!claude}`);
 
     // Get user profile for age-appropriate responses
     let ageGroup = 'middle';
@@ -172,6 +173,8 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
     // parentalSettings = await getParentalSettings(userId);
 
     // Process through smart learning engine
+    console.log(`🔧 Passing to learning engine - OpenAI: ${!!openai}, Claude: ${!!claude}`);
+    
     const learningResult = await processLearningInteraction(message, {
       subject,
       ageGroup,

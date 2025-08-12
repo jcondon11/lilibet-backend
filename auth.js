@@ -1,181 +1,226 @@
-// auth.js - PostgreSQL Version for Railway
+// auth.js - Enhanced Hybrid Authentication System
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
+require('dotenv').config();
 
-// Database connection using Railway's provided DATABASE_URL
+// PostgreSQL connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Test database connection
-pool.connect()
-  .then(client => {
-    console.log('✅ Connected to PostgreSQL database');
-    client.release();
-  })
-  .catch(err => {
-    console.error('❌ Database connection failed:', err);
-  });
+// JWT secret
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
-// Initialize database tables
+// Initialize database with enhanced schema
 const initializeDatabase = async () => {
   try {
     const client = await pool.connect();
-
-    // Users table
+    
+    // Create enhanced users table with username support
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
+        username VARCHAR(50) UNIQUE,
+        display_name VARCHAR(100),
         password_hash VARCHAR(255) NOT NULL,
-        display_name VARCHAR(255),
-        age_group VARCHAR(50) DEFAULT 'middle',
-        preferred_subjects TEXT DEFAULT '[]',
+        account_type VARCHAR(20) DEFAULT 'student',
+        age_group VARCHAR(20),
+        parent_id INTEGER REFERENCES users(id),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+        last_login TIMESTAMP,
+        is_active BOOLEAN DEFAULT true,
+        settings JSONB DEFAULT '{}',
+        avatar_emoji VARCHAR(10) DEFAULT '🎓'
+      );
     `);
-    console.log('✅ Users table ready');
 
-    // Conversations table
+    // Create conversations table
     await client.query(`
       CREATE TABLE IF NOT EXISTS conversations (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id),
-        subject VARCHAR(100) NOT NULL,
-        title VARCHAR(255),
-        messages TEXT NOT NULL DEFAULT '[]',
-        detected_level VARCHAR(50),
-        model_used VARCHAR(50) DEFAULT 'openai',
-        is_archived BOOLEAN DEFAULT FALSE,
-        tags TEXT DEFAULT '[]',
+        user_id INTEGER REFERENCES users(id),
+        subject VARCHAR(50),
+        messages JSONB,
+        learning_mode VARCHAR(50),
+        model_used VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_saved BOOLEAN DEFAULT false,
+        title VARCHAR(255),
+        summary TEXT,
+        parent_viewed BOOLEAN DEFAULT false
+      );
     `);
-    console.log('✅ Conversations table ready');
 
-    // User sessions table
+    // Create learning analytics table
     await client.query(`
-      CREATE TABLE IF NOT EXISTS user_sessions (
+      CREATE TABLE IF NOT EXISTS learning_analytics (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id),
-        token_hash VARCHAR(255) NOT NULL,
-        expires_at TIMESTAMP NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+        user_id INTEGER REFERENCES users(id),
+        date DATE DEFAULT CURRENT_DATE,
+        total_minutes INTEGER DEFAULT 0,
+        messages_sent INTEGER DEFAULT 0,
+        subjects JSONB DEFAULT '{}',
+        learning_modes JSONB DEFAULT '{}',
+        points_earned INTEGER DEFAULT 0,
+        streak_days INTEGER DEFAULT 0
+      );
     `);
-    console.log('✅ Sessions table ready');
+
+    // Create indexes for better performance
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_username_lower ON users(LOWER(username));
+      CREATE INDEX IF NOT EXISTS idx_email_lower ON users(LOWER(email));
+      CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);
+      CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON learning_analytics(user_id, date);
+    `);
 
     client.release();
-    console.log('🎉 All database tables initialized successfully!');
+    console.log('✅ Database initialized with hybrid authentication support');
   } catch (error) {
-    console.error('❌ Error initializing database:', error);
-    throw error;
+    console.error('Database initialization error:', error);
   }
 };
 
-// JWT secret - use environment variable in production
-const JWT_SECRET = process.env.JWT_SECRET || 'lilibet-fallback-secret-change-in-production';
+// Generate JWT token
+const generateToken = (user) => {
+  return jwt.sign(
+    { 
+      id: user.id, 
+      email: user.email,
+      username: user.username,
+      accountType: user.accountType,
+      displayName: user.displayName 
+    },
+    JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+};
 
-// Middleware to verify JWT token
+// Authenticate token middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
+    return res.status(401).json({ error: 'No token provided' });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      console.log('🔒 Invalid token attempt');
-      return res.status(403).json({ error: 'Invalid or expired token' });
+      return res.status(403).json({ error: 'Invalid token' });
     }
     req.user = user;
     next();
   });
 };
 
-// Helper function to generate JWT
-const generateToken = (user) => {
-  return jwt.sign(
-    { id: user.id, email: user.email },
-    JWT_SECRET,
-    { expiresIn: '7d' } // Token expires in 7 days
-  );
-};
-
-// Helper function to hash passwords
-const hashPassword = async (password) => {
-  const saltRounds = 10;
-  return await bcrypt.hash(password, saltRounds);
-};
-
-// Helper function to validate email
-const isValidEmail = (email) => {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-};
-
-// Register new user
+// Register new user (parent or student)
 const registerUser = async (req, res) => {
   try {
-    const { email, password, displayName, ageGroup } = req.body;
+    const { 
+      email, 
+      username,
+      password, 
+      displayName, 
+      ageGroup,
+      accountType = 'student',
+      parentEmail = null 
+    } = req.body;
 
-    // Validation
+    // Validate required fields
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address' });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    // Validate username if provided
+    if (username && !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+      return res.status(400).json({ 
+        error: 'Username must be 3-20 characters and contain only letters, numbers, and underscores' 
+      });
     }
 
     const client = await pool.connect();
 
     try {
-      // Check if user already exists
-      const existingUser = await client.query('SELECT id FROM users WHERE email = $1', [email]);
-      
-      if (existingUser.rows.length > 0) {
+      // Check if email already exists
+      const emailCheck = await client.query(
+        'SELECT id FROM users WHERE LOWER(email) = LOWER($1)',
+        [email]
+      );
+
+      if (emailCheck.rows.length > 0) {
         client.release();
-        return res.status(409).json({ error: 'An account with this email already exists' });
+        return res.status(400).json({ error: 'Email already registered' });
       }
 
-      // Hash password and create user
-      const passwordHash = await hashPassword(password);
-      
+      // Check if username already exists (if provided)
+      if (username) {
+        const usernameCheck = await client.query(
+          'SELECT id FROM users WHERE LOWER(username) = LOWER($1)',
+          [username]
+        );
+
+        if (usernameCheck.rows.length > 0) {
+          client.release();
+          return res.status(400).json({ error: 'Username already taken' });
+        }
+      }
+
+      // Find parent ID if this is a student account with parent email
+      let parentId = null;
+      if (accountType === 'student' && parentEmail) {
+        const parentResult = await client.query(
+          'SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND account_type = $2',
+          [parentEmail, 'parent']
+        );
+        if (parentResult.rows.length > 0) {
+          parentId = parentResult.rows[0].id;
+        }
+      }
+
+      // Hash password
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Insert new user
       const result = await client.query(`
-        INSERT INTO users (email, password_hash, display_name, age_group) 
-        VALUES ($1, $2, $3, $4) 
-        RETURNING id, email, display_name, age_group
+        INSERT INTO users (
+          email, username, display_name, password_hash, 
+          account_type, age_group, parent_id, avatar_emoji
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+        RETURNING id, email, username, display_name, account_type, age_group, avatar_emoji
       `, [
-        email, 
-        passwordHash, 
-        displayName || email.split('@')[0], 
-        ageGroup || 'middle'
+        email.toLowerCase(),
+        username ? username.toLowerCase() : null,
+        displayName || username || email.split('@')[0],
+        hashedPassword,
+        accountType,
+        ageGroup,
+        parentId,
+        accountType === 'student' ? '🎓' : '👨‍👩‍👧‍👦'
       ]);
 
       const newUser = result.rows[0];
-      const token = generateToken(newUser);
-
       client.release();
 
-      console.log(`🎉 New user registered: ${email}`);
+      // Generate token
+      const token = generateToken(newUser);
+
+      console.log(`✅ New ${accountType} registered: ${email} (${username || 'no username'})`);
+
       res.status(201).json({
-        message: 'Account created successfully!',
+        message: 'Registration successful!',
         user: {
           id: newUser.id,
           email: newUser.email,
+          username: newUser.username,
           displayName: newUser.display_name,
-          ageGroup: newUser.age_group
+          accountType: newUser.account_type,
+          ageGroup: newUser.age_group,
+          avatar: newUser.avatar_emoji
         },
         token
       });
@@ -192,27 +237,31 @@ const registerUser = async (req, res) => {
   }
 };
 
-// Login user
+// Enhanced login - accepts email OR username
 const loginUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { loginId, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    if (!loginId || !password) {
+      return res.status(400).json({ error: 'Login ID and password are required' });
     }
 
     const client = await pool.connect();
 
     try {
-      // Find user
-      const result = await client.query(`
-        SELECT id, email, password_hash, display_name, age_group 
-        FROM users WHERE email = $1
-      `, [email]);
+      // Check if loginId is email (contains @) or username
+      const isEmail = loginId.includes('@');
+      
+      // Query user by email or username
+      const query = isEmail
+        ? 'SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND is_active = true'
+        : 'SELECT * FROM users WHERE LOWER(username) = LOWER($1) AND is_active = true';
+      
+      const result = await client.query(query, [loginId]);
 
       if (result.rows.length === 0) {
         client.release();
-        return res.status(401).json({ error: 'Invalid email or password' });
+        return res.status(401).json({ error: 'Invalid login credentials' });
       }
 
       const user = result.rows[0];
@@ -222,21 +271,31 @@ const loginUser = async (req, res) => {
       
       if (!passwordMatch) {
         client.release();
-        return res.status(401).json({ error: 'Invalid email or password' });
+        return res.status(401).json({ error: 'Invalid login credentials' });
       }
+
+      // Update last login
+      await client.query(
+        'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+        [user.id]
+      );
 
       const userInfo = {
         id: user.id,
         email: user.email,
+        username: user.username,
         displayName: user.display_name,
-        ageGroup: user.age_group
+        accountType: user.account_type,
+        ageGroup: user.age_group,
+        avatar: user.avatar_emoji
       };
 
       const token = generateToken(userInfo);
 
       client.release();
 
-      console.log(`🔓 User logged in: ${email}`);
+      console.log(`🔓 User logged in: ${loginId} (${user.account_type})`);
+      
       res.json({
         message: 'Login successful!',
         user: userInfo,
@@ -262,8 +321,10 @@ const getUserProfile = async (req, res) => {
     const client = await pool.connect();
 
     const result = await client.query(`
-      SELECT id, email, display_name, age_group, preferred_subjects, created_at 
-      FROM users WHERE id = $1
+      SELECT id, email, username, display_name, account_type, 
+             age_group, avatar_emoji, created_at, last_login, settings
+      FROM users 
+      WHERE id = $1 AND is_active = true
     `, [userId]);
 
     client.release();
@@ -272,201 +333,132 @@ const getUserProfile = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const user = result.rows[0];
-    
-    res.json({
-      user: {
-        ...user,
-        displayName: user.display_name,
-        ageGroup: user.age_group,
-        preferred_subjects: JSON.parse(user.preferred_subjects || '[]')
-      }
-    });
-
+    res.json({ user: result.rows[0] });
   } catch (error) {
     console.error('Get profile error:', error);
-    res.status(500).json({ error: 'Database error occurred' });
+    res.status(500).json({ error: 'Failed to get profile' });
   }
 };
 
-// Save conversation
-const saveConversation = async (req, res) => {
+// Update user profile
+const updateUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { subject, messages, detectedLevel, modelUsed, title } = req.body;
+    const { displayName, ageGroup, avatarEmoji, settings } = req.body;
+    
+    const client = await pool.connect();
 
-    if (!subject || !messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'Subject and messages array are required' });
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (displayName !== undefined) {
+      updates.push(`display_name = $${paramCount++}`);
+      values.push(displayName);
+    }
+    if (ageGroup !== undefined) {
+      updates.push(`age_group = $${paramCount++}`);
+      values.push(ageGroup);
+    }
+    if (avatarEmoji !== undefined) {
+      updates.push(`avatar_emoji = $${paramCount++}`);
+      values.push(avatarEmoji);
+    }
+    if (settings !== undefined) {
+      updates.push(`settings = $${paramCount++}`);
+      values.push(JSON.stringify(settings));
     }
 
-    // Generate a title if not provided
-    const conversationTitle = title || `${subject} session - ${new Date().toLocaleDateString()}`;
+    if (updates.length === 0) {
+      client.release();
+      return res.status(400).json({ error: 'No updates provided' });
+    }
 
+    values.push(userId);
+
+    const result = await client.query(`
+      UPDATE users 
+      SET ${updates.join(', ')}
+      WHERE id = $${paramCount}
+      RETURNING id, email, username, display_name, account_type, age_group, avatar_emoji, settings
+    `, values);
+
+    client.release();
+
+    res.json({ 
+      message: 'Profile updated successfully',
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+};
+
+// Check username availability
+const checkUsername = async (req, res) => {
+  try {
+    const { username } = req.params;
+    
+    if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+      return res.status(400).json({ 
+        available: false,
+        error: 'Invalid username format' 
+      });
+    }
+
+    const client = await pool.connect();
+    
+    const result = await client.query(
+      'SELECT id FROM users WHERE LOWER(username) = LOWER($1)',
+      [username]
+    );
+    
+    client.release();
+    
+    res.json({ 
+      available: result.rows.length === 0,
+      username: username 
+    });
+  } catch (error) {
+    console.error('Check username error:', error);
+    res.status(500).json({ error: 'Failed to check username' });
+  }
+};
+
+// Get linked students (for parent accounts)
+const getLinkedStudents = async (req, res) => {
+  try {
+    const parentId = req.user.id;
     const client = await pool.connect();
 
     const result = await client.query(`
-      INSERT INTO conversations (user_id, subject, title, messages, detected_level, model_used)
-      VALUES ($1, $2, $3, $4, $5, $6) 
-      RETURNING id
-    `, [
-      userId, 
-      subject, 
-      conversationTitle, 
-      JSON.stringify(messages), 
-      detectedLevel, 
-      modelUsed
-    ]);
+      SELECT id, email, username, display_name, age_group, 
+             avatar_emoji, last_login, created_at
+      FROM users 
+      WHERE parent_id = $1 AND is_active = true
+      ORDER BY display_name
+    `, [parentId]);
 
     client.release();
 
-    console.log(`💾 Conversation saved for user ${userId}: ${conversationTitle}`);
-    res.json({
-      message: 'Conversation saved successfully',
-      conversationId: result.rows[0].id
-    });
-
+    res.json({ students: result.rows });
   } catch (error) {
-    console.error('Save conversation error:', error);
-    res.status(500).json({ error: 'Failed to save conversation' });
+    console.error('Get linked students error:', error);
+    res.status(500).json({ error: 'Failed to get linked students' });
   }
 };
 
-// Get user's conversations
-const getUserConversations = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { subject, limit = 50, offset = 0 } = req.query;
-
-    let query = `
-      SELECT id, subject, title, detected_level, model_used, created_at, updated_at
-      FROM conversations 
-      WHERE user_id = $1 AND is_archived = FALSE
-    `;
-    let params = [userId];
-    let paramCount = 1;
-
-    if (subject) {
-      paramCount++;
-      query += ` AND subject = $${paramCount}`;
-      params.push(subject);
-    }
-
-    paramCount++;
-    query += ` ORDER BY updated_at DESC LIMIT $${paramCount}`;
-    params.push(parseInt(limit));
-    
-    paramCount++;
-    query += ` OFFSET $${paramCount}`;
-    params.push(parseInt(offset));
-
-    const client = await pool.connect();
-    const result = await client.query(query, params);
-    client.release();
-
-    res.json({ conversations: result.rows });
-
-  } catch (error) {
-    console.error('Get conversations error:', error);
-    res.status(500).json({ error: 'Database error occurred' });
-  }
-};
-
-// Get specific conversation with messages
-const getConversation = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const conversationId = req.params.id;
-
-    const client = await pool.connect();
-    
-    const result = await client.query(`
-      SELECT * FROM conversations 
-      WHERE id = $1 AND user_id = $2
-    `, [conversationId, userId]);
-
-    client.release();
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const conversation = result.rows[0];
-
-    res.json({
-      conversation: {
-        ...conversation,
-        messages: JSON.parse(conversation.messages)
-      }
-    });
-
-  } catch (error) {
-    console.error('Get conversation error:', error);
-    res.status(500).json({ error: 'Database error occurred' });
-  }
-};
-
-// Update conversation (for adding new messages)
-const updateConversation = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const conversationId = req.params.id;
-    const { messages, title } = req.body;
-
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'Messages array is required' });
-    }
-
-    const client = await pool.connect();
-
-    let query = 'UPDATE conversations SET messages = $1, updated_at = CURRENT_TIMESTAMP';
-    let params = [JSON.stringify(messages)];
-    let paramCount = 1;
-
-    if (title) {
-      paramCount++;
-      query += `, title = $${paramCount}`;
-      params.push(title);
-    }
-
-    paramCount++;
-    query += ` WHERE id = $${paramCount}`;
-    params.push(conversationId);
-    
-    paramCount++;
-    query += ` AND user_id = $${paramCount}`;
-    params.push(userId);
-
-    const result = await client.query(query, params);
-    client.release();
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    res.json({ message: 'Conversation updated successfully' });
-
-  } catch (error) {
-    console.error('Update conversation error:', error);
-    res.status(500).json({ error: 'Failed to update conversation' });
-  }
-};
-
-// Logout (invalidate token on server side)
-const logoutUser = (req, res) => {
-  console.log('👋 User logged out');
-  res.json({ message: 'Logged out successfully' });
-};
-
+// Export all functions
 module.exports = {
   initializeDatabase,
   authenticateToken,
   registerUser,
   loginUser,
   getUserProfile,
-  saveConversation,
-  getUserConversations,
-  getConversation,
-  updateConversation,
-  logoutUser,
+  updateUserProfile,
+  checkUsername,
+  getLinkedStudents,
+  generateToken,
   pool
 };

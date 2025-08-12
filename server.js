@@ -132,16 +132,32 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
     console.log(`🎓 Learning request from user ${userId}: "${message.substring(0, 50)}..."`);
 
     // Get user profile for age-appropriate responses
-    const userProfile = await getUserProfile(req, { user: req.user }, res);
-    const ageGroup = userProfile?.user?.ageGroup || 'middle';
+    let ageGroup = 'middle';
+    try {
+      // Create a mock response object that matches what getUserProfile expects
+      const mockRes = {
+        json: (data) => data,
+        status: (code) => ({ json: (data) => data })
+      };
+      const userProfile = await getUserProfile(req, mockRes, () => {});
+      ageGroup = userProfile?.user?.ageGroup || 'middle';
+    } catch (error) {
+      console.log('📝 Using default age group (middle) due to profile error');
+      ageGroup = 'middle';
+    }
 
     // Get conversation history if continuing existing conversation
     let conversationHistory = [];
     if (conversationId) {
       try {
+        // Create mock response for getConversation
+        const mockRes = {
+          json: (data) => data,
+          status: (code) => ({ json: (data) => data })
+        };
         const conversation = await getConversation(
           { params: { id: conversationId }, user: req.user }, 
-          { json: (data) => data }, 
+          mockRes, 
           () => {}
         );
         conversationHistory = conversation?.messages || [];
@@ -161,7 +177,9 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
       ageGroup,
       conversationHistory,
       parentalSettings,
-      forceLearningMode
+      forceLearningMode,
+      openaiClient: openai,  // Pass the clients to avoid circular dependency
+      claudeClient: claude
     });
 
     const response = learningResult.response;
@@ -184,19 +202,45 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
 
       let saveResult;
       if (conversationId) {
-        // Update existing conversation
-        saveResult = await updateConversation(
+        // Update existing conversation - create proper mock response
+        const mockRes = {
+          json: (data) => {
+            console.log('💾 Conversation updated successfully');
+            return data;
+          },
+          status: (code) => ({ 
+            json: (data) => {
+              console.log('💾 Conversation update response:', data);
+              return data;
+            }
+          })
+        };
+        
+        await updateConversation(
           { 
             params: { id: conversationId }, 
             body: { messages: newMessages }, 
             user: req.user 
           },
-          { json: (data) => data },
+          mockRes,
           () => {}
         );
       } else {
-        // Create new conversation
-        saveResult = await saveConversation(
+        // Create new conversation - create proper mock response  
+        const mockRes = {
+          json: (data) => {
+            console.log('💾 New conversation created successfully');
+            return data;
+          },
+          status: (code) => ({ 
+            json: (data) => {
+              console.log('💾 New conversation response:', data);
+              return data;
+            }
+          })
+        };
+        
+        await saveConversation(
           {
             body: {
               subject,
@@ -205,7 +249,7 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
             },
             user: req.user
           },
-          { json: (data) => data },
+          mockRes,
           () => {}
         );
       }
@@ -256,12 +300,18 @@ app.post('/api/learning/detect-mode', authenticateToken, async (req, res) => {
   try {
     const { message, conversationHistory = [], ageGroup = 'middle' } = req.body;
     
+    const availableModels = {
+      openai: !!openai,
+      claude: !!claude
+    };
+    
     const detectedMode = detectLearningMode(message, conversationHistory, ageGroup);
-    const optimalModel = chooseOptimalModel(detectedMode);
+    const optimalModel = chooseOptimalModel(detectedMode, availableModels);
     
     res.json({
       detectedMode,
       optimalModel,
+      availableModels,
       availableModes: Object.values(LEARNING_MODES),
       recommendation: `Best approach: ${detectedMode} mode using ${optimalModel}`
     });

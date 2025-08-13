@@ -1,4 +1,4 @@
-// auth.js - Enhanced with Email OR Username Login Support
+// auth.js - Fixed Authentication with Email OR Username Login Support
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
@@ -270,7 +270,7 @@ const registerUser = async (req, res) => {
   }
 };
 
-// ENHANCED: Login with email OR username support
+// FIXED: Login with email OR username support
 const loginUser = async (req, res) => {
   try {
     // SUPPORT BOTH FORMATS: 
@@ -278,7 +278,10 @@ const loginUser = async (req, res) => {
     // Old format: { email, password }
     const { emailOrUsername, email, password } = req.body;
     
+    // Use emailOrUsername if provided, otherwise fall back to email field
     const loginIdentifier = emailOrUsername || email;
+
+    console.log('🔐 Login attempt with identifier:', loginIdentifier);
 
     if (!loginIdentifier || !password) {
       return res.status(400).json({ error: 'Email/username and password are required' });
@@ -287,31 +290,36 @@ const loginUser = async (req, res) => {
     const client = await pool.connect();
 
     try {
-      // Try to find user by email OR username
+      // Determine if it's an email or username and query accordingly
       let query, params;
       if (isValidEmail(loginIdentifier)) {
         // Login with email
-        query = 'SELECT * FROM users WHERE email = $1 AND (is_active IS NULL OR is_active = TRUE)';
+        console.log('📧 Attempting email login');
+        query = 'SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND (is_active IS NULL OR is_active = TRUE)';
         params = [loginIdentifier];
       } else {
         // Login with username
-        query = 'SELECT * FROM users WHERE username = $1 AND (is_active IS NULL OR is_active = TRUE)';
+        console.log('👤 Attempting username login');
+        query = 'SELECT * FROM users WHERE LOWER(username) = LOWER($1) AND (is_active IS NULL OR is_active = TRUE)';
         params = [loginIdentifier];
       }
 
       const result = await client.query(query, params);
 
       if (result.rows.length === 0) {
+        console.log('❌ No user found with identifier:', loginIdentifier);
         client.release();
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
       const user = result.rows[0];
+      console.log('✅ User found:', user.email);
 
       // Verify password
       const passwordMatch = await bcrypt.compare(password, user.password_hash);
       
       if (!passwordMatch) {
+        console.log('❌ Password mismatch for user:', user.email);
         client.release();
         return res.status(401).json({ error: 'Invalid credentials' });
       }
@@ -330,16 +338,16 @@ const loginUser = async (req, res) => {
         id: user.id,
         email: user.email,
         username: user.username,
-        displayName: user.display_name,
+        displayName: user.display_name || user.email.split('@')[0],
         userType: user.user_type || 'student',
-        ageGroup: user.age_group
+        ageGroup: user.age_group || 'middle'
       };
 
       const token = generateToken(userInfo);
 
       client.release();
 
-      console.log(`🔓 ${user.user_type || 'user'} logged in: ${loginIdentifier}`);
+      console.log(`🔓 ${user.user_type || 'user'} logged in successfully: ${loginIdentifier}`);
       
       res.json({
         message: 'Login successful!',
@@ -349,7 +357,7 @@ const loginUser = async (req, res) => {
 
     } catch (dbError) {
       client.release();
-      console.error('Database error:', dbError);
+      console.error('Database error during login:', dbError);
       res.status(500).json({ error: 'Database error occurred' });
     }
 

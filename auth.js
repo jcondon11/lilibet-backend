@@ -1,4 +1,4 @@
-// auth.js - Fixed Authentication with Email OR Username Login Support
+// auth.js - Debug Version with Enhanced Logging
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
@@ -175,31 +175,38 @@ const isValidUsername = (username) => {
 // ENHANCED: Register user with optional username
 const registerUser = async (req, res) => {
   try {
+    console.log('📝 Registration attempt started');
+    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+    
     const { 
       email, 
       username, 
       password, 
       displayName, 
       userType = 'student',
-      ageGroup
+      ageGroup = 'middle'
     } = req.body;
 
     // Validation
     if (!email || !password) {
+      console.log('❌ Missing email or password');
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
     if (!isValidEmail(email)) {
+      console.log('❌ Invalid email format:', email);
       return res.status(400).json({ error: 'Please enter a valid email address' });
     }
 
     if (username && !isValidUsername(username)) {
+      console.log('❌ Invalid username format:', username);
       return res.status(400).json({ 
         error: 'Username must be 3-20 characters and contain only letters, numbers, and underscores' 
       });
     }
 
     if (password.length < 6) {
+      console.log('❌ Password too short');
       return res.status(400).json({ error: 'Password must be at least 6 characters long' });
     }
 
@@ -207,16 +214,18 @@ const registerUser = async (req, res) => {
 
     try {
       // Check if email already exists
-      const existingEmail = await client.query('SELECT id FROM users WHERE email = $1', [email]);
+      const existingEmail = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
       if (existingEmail.rows.length > 0) {
+        console.log('❌ Email already exists:', email);
         client.release();
         return res.status(409).json({ error: 'An account with this email already exists' });
       }
 
       // Check if username already exists (if provided)
       if (username) {
-        const existingUsername = await client.query('SELECT id FROM users WHERE username = $1', [username]);
+        const existingUsername = await client.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [username]);
         if (existingUsername.rows.length > 0) {
+          console.log('❌ Username already exists:', username);
           client.release();
           return res.status(409).json({ error: 'This username is already taken' });
         }
@@ -224,18 +233,29 @@ const registerUser = async (req, res) => {
 
       // Hash password and create user
       const passwordHash = await hashPassword(password);
+      console.log('🔐 Password hashed successfully');
+      
+      const finalAgeGroup = userType === 'parent' ? 'adult' : (ageGroup || 'middle');
+      
+      console.log('📝 Creating user with:', {
+        email,
+        username: username || null,
+        displayName: displayName || email.split('@')[0],
+        userType,
+        ageGroup: finalAgeGroup
+      });
       
       const result = await client.query(`
         INSERT INTO users (email, username, password_hash, display_name, user_type, age_group) 
         VALUES ($1, $2, $3, $4, $5, $6) 
         RETURNING id, email, username, display_name, user_type, age_group
       `, [
-        email, 
-        username || null,
+        email.toLowerCase(), // Store email in lowercase
+        username ? username.toLowerCase() : null, // Store username in lowercase
         passwordHash, 
         displayName || email.split('@')[0], 
         userType,
-        userType === 'parent' ? 'adult' : (ageGroup || 'middle')
+        finalAgeGroup
       ]);
 
       const newUser = result.rows[0];
@@ -243,7 +263,11 @@ const registerUser = async (req, res) => {
 
       client.release();
 
-      console.log(`🎉 New ${userType} registered: ${email}${username ? ` (username: ${username})` : ''}`);
+      console.log(`✅ New ${userType} registered successfully:`, {
+        id: newUser.id,
+        email: newUser.email,
+        username: newUser.username
+      });
       
       res.status(201).json({
         message: `${userType === 'parent' ? 'Parent' : 'Student'} account created successfully!`,
@@ -260,19 +284,22 @@ const registerUser = async (req, res) => {
 
     } catch (dbError) {
       client.release();
-      console.error('Database error:', dbError);
-      res.status(500).json({ error: 'Database error occurred' });
+      console.error('❌ Database error during registration:', dbError);
+      res.status(500).json({ error: 'Database error occurred: ' + dbError.message });
     }
 
   } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    console.error('❌ Registration error:', error);
+    res.status(500).json({ error: 'Registration failed: ' + error.message });
   }
 };
 
 // FIXED: Login with email OR username support
 const loginUser = async (req, res) => {
   try {
+    console.log('🔐 Login attempt started');
+    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+    
     // SUPPORT BOTH FORMATS: 
     // New format: { emailOrUsername, password }
     // Old format: { email, password }
@@ -281,47 +308,70 @@ const loginUser = async (req, res) => {
     // Use emailOrUsername if provided, otherwise fall back to email field
     const loginIdentifier = emailOrUsername || email;
 
-    console.log('🔐 Login attempt with identifier:', loginIdentifier);
+    console.log('🔍 Login identifier:', loginIdentifier);
+    console.log('🔍 Password length:', password ? password.length : 0);
 
     if (!loginIdentifier || !password) {
+      console.log('❌ Missing credentials');
       return res.status(400).json({ error: 'Email/username and password are required' });
     }
 
     const client = await pool.connect();
 
     try {
+      // First, let's check what users exist in the database
+      const allUsersCheck = await client.query('SELECT id, email, username FROM users LIMIT 10');
+      console.log('📊 Sample users in database:', allUsersCheck.rows);
+
       // Determine if it's an email or username and query accordingly
       let query, params;
       if (isValidEmail(loginIdentifier)) {
-        // Login with email
+        // Login with email - case insensitive
         console.log('📧 Attempting email login');
-        query = 'SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND (is_active IS NULL OR is_active = TRUE)';
+        query = 'SELECT * FROM users WHERE LOWER(email) = LOWER($1)';
         params = [loginIdentifier];
       } else {
-        // Login with username
+        // Login with username - case insensitive
         console.log('👤 Attempting username login');
-        query = 'SELECT * FROM users WHERE LOWER(username) = LOWER($1) AND (is_active IS NULL OR is_active = TRUE)';
+        query = 'SELECT * FROM users WHERE LOWER(username) = LOWER($1)';
         params = [loginIdentifier];
       }
+
+      console.log('🔍 Executing query:', query);
+      console.log('🔍 With params:', params);
 
       const result = await client.query(query, params);
 
       if (result.rows.length === 0) {
         console.log('❌ No user found with identifier:', loginIdentifier);
+        
+        // Let's do a more thorough check
+        const emailCheck = await client.query('SELECT id, email FROM users WHERE LOWER(email) = LOWER($1)', [loginIdentifier]);
+        const usernameCheck = await client.query('SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)', [loginIdentifier]);
+        
+        console.log('📧 Email check result:', emailCheck.rows);
+        console.log('👤 Username check result:', usernameCheck.rows);
+        
         client.release();
-        return res.status(401).json({ error: 'Invalid credentials' });
+        return res.status(401).json({ error: 'Invalid credentials - user not found' });
       }
 
       const user = result.rows[0];
-      console.log('✅ User found:', user.email);
+      console.log('✅ User found:', {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        hasPassword: !!user.password_hash
+      });
 
       // Verify password
       const passwordMatch = await bcrypt.compare(password, user.password_hash);
+      console.log('🔐 Password match result:', passwordMatch);
       
       if (!passwordMatch) {
         console.log('❌ Password mismatch for user:', user.email);
         client.release();
-        return res.status(401).json({ error: 'Invalid credentials' });
+        return res.status(401).json({ error: 'Invalid credentials - wrong password' });
       }
 
       // Update last login
@@ -330,6 +380,7 @@ const loginUser = async (req, res) => {
           'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
           [user.id]
         );
+        console.log('✅ Updated last login timestamp');
       } catch (updateError) {
         console.log('⚠️ Could not update last login:', updateError.message);
       }
@@ -347,7 +398,7 @@ const loginUser = async (req, res) => {
 
       client.release();
 
-      console.log(`🔓 ${user.user_type || 'user'} logged in successfully: ${loginIdentifier}`);
+      console.log(`✅ ${user.user_type || 'user'} logged in successfully:`, loginIdentifier);
       
       res.json({
         message: 'Login successful!',
@@ -357,13 +408,13 @@ const loginUser = async (req, res) => {
 
     } catch (dbError) {
       client.release();
-      console.error('Database error during login:', dbError);
-      res.status(500).json({ error: 'Database error occurred' });
+      console.error('❌ Database error during login:', dbError);
+      res.status(500).json({ error: 'Database error occurred: ' + dbError.message });
     }
 
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('❌ Login error:', error);
+    res.status(500).json({ error: 'Login failed: ' + error.message });
   }
 };
 
@@ -441,7 +492,7 @@ const getUserConversations = async (req, res) => {
       const result = await client.query(
         `SELECT id, subject, title, created_at, updated_at 
          FROM conversations 
-         WHERE user_id = $1 AND is_archived = FALSE 
+         WHERE user_id = $1 AND (is_archived = FALSE OR is_archived IS NULL)
          ORDER BY updated_at DESC`,
         [userId]
       );

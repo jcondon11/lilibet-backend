@@ -1,336 +1,310 @@
-// learningEngine.js - Smart Learning Intelligence System for Lilibet
-// Implements intelligent learning mode detection and routing
-// Uses proven techniques from OpenAI Study Mode and Anthropic Learning Mode
+// learningEngine.js - Smart Learning Intelligence System (Fixed for new OpenAI API)
+const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 
-/**
- * LEARNING MODES - Based on OpenAI Study Mode and Claude Learning Mode research
- */
-const LEARNING_MODES = {
-  DISCOVERY: 'discovery',      // Deep exploration with Socratic questioning (Claude best)
-  PRACTICE: 'practice',        // Quick drills and skill building (OpenAI best)  
-  EXPLANATION: 'explanation',  // Concept understanding with examples (Claude best)
-  CHALLENGE: 'challenge',      // Problem-solving and application (OpenAI best)
-  REVIEW: 'review'            // Knowledge checking and reinforcement (OpenAI best)
-};
+// Initialize AI clients
+let openaiClient = null;
+let claudeClient = null;
 
-/**
- * Analyze student input to determine optimal learning mode
- */
-const detectLearningMode = (userInput, conversationHistory = [], studentAge = 'middle') => {
-  const input = userInput.toLowerCase();
+// Initialize clients only if API keys are present
+if (process.env.OPENAI_API_KEY) {
+  openaiClient = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+  });
+  console.log('✅ OpenAI API Key: ✅ Set');
+} else {
+  console.log('⚠️ OpenAI API Key: Not configured');
+}
+
+if (process.env.CLAUDE_API_KEY) {
+  claudeClient = new Anthropic({
+    apiKey: process.env.CLAUDE_API_KEY
+  });
+  console.log('✅ Claude API Key: ✅ Set');
+} else {
+  console.log('⚠️ Claude API Key: Not configured');
+}
+
+// Learning Mode Detection
+const detectLearningMode = (message) => {
+  const msg = message.toLowerCase();
   
-  // Keywords that indicate different learning needs
-  const discoveryKeywords = ['why', 'how does', 'what if', 'explain', 'understand', 'confused', "don't get"];
-  const practiceKeywords = ['practice', 'drill', 'exercise', 'quiz', 'test me', 'more problems'];
-  const explanationKeywords = ['what is', 'define', 'meaning', 'concept', 'theory', 'principle'];
-  const challengeKeywords = ['solve', 'problem', 'challenge', 'harder', 'difficult', 'apply'];
-  const reviewKeywords = ['review', 'check', 'correct', 'grade', 'feedback', 'did i get'];
-
-  // Check for explicit mode requests
-  if (discoveryKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.DISCOVERY;
-  }
-  if (practiceKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.PRACTICE;
-  }
-  if (explanationKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.EXPLANATION;
-  }
-  if (challengeKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.CHALLENGE;
-  }
-  if (reviewKeywords.some(keyword => input.includes(keyword))) {
-    return LEARNING_MODES.REVIEW;
-  }
-
-  // Analyze conversation context
-  if (conversationHistory.length > 3) {
-    const recentMessages = conversationHistory.slice(-3);
-    const hasQuestions = recentMessages.some(msg => 
-      msg.role === 'assistant' && msg.content.includes('?')
-    );
-    
-    if (hasQuestions) {
-      return LEARNING_MODES.DISCOVERY; // Continue Socratic questioning
-    }
-  }
-
-  // Default based on age and input complexity
-  const wordCount = userInput.split(' ').length;
-  if (wordCount > 15) {
-    return LEARNING_MODES.EXPLANATION; // Long questions need explanation
+  // Discovery Mode - Questions and curiosity
+  if (msg.includes('what is') || msg.includes('how does') || msg.includes('why') || 
+      msg.includes('tell me about') || msg.includes('explain')) {
+    return 'explanation';
   }
   
-  return LEARNING_MODES.DISCOVERY; // Default to discovery learning
+  // Practice Mode - Exercises and problems
+  if (msg.includes('practice') || msg.includes('solve') || msg.includes('calculate') ||
+      msg.includes('exercise') || msg.includes('problem') || msg.includes('work through')) {
+    return 'practice';
+  }
+  
+  // Discovery Mode - Open exploration
+  if (msg.includes('wonder') || msg.includes('curious') || msg.includes('explore') ||
+      msg.includes('discover') || msg.includes('learn about')) {
+    return 'discovery';
+  }
+  
+  // Challenge Mode - Testing knowledge
+  if (msg.includes('challenge') || msg.includes('test') || msg.includes('quiz') ||
+      msg.includes('hard') || msg.includes('difficult')) {
+    return 'challenge';
+  }
+  
+  // Review Mode - Reinforcement
+  if (msg.includes('review') || msg.includes('remember') || msg.includes('recap') ||
+      msg.includes('summarize') || msg.includes('go over')) {
+    return 'review';
+  }
+  
+  // Default to discovery for open-ended questions
+  return 'discovery';
 };
 
-/**
- * Choose optimal AI model for the learning mode
- */
-const chooseOptimalModel = (learningMode, availableModels = { openai: false, claude: false }) => {
-  // Based on strengths observed in Study Mode vs Learning Mode
-  switch (learningMode) {
-    case LEARNING_MODES.DISCOVERY:
-    case LEARNING_MODES.EXPLANATION:
-      return availableModels.claude ? 'claude' : 'openai'; // Claude excels at reasoning and explanation
-    
-    case LEARNING_MODES.PRACTICE:
-    case LEARNING_MODES.CHALLENGE:
-    case LEARNING_MODES.REVIEW:
-      return 'openai'; // OpenAI better for quick responses and problem-solving
-    
+// Intelligent Model Selection
+const selectOptimalModel = (mode, hasOpenAI, hasClaude) => {
+  // If only one API is available, use it
+  if (!hasOpenAI && hasClaude) return 'claude';
+  if (hasOpenAI && !hasClaude) return 'openai';
+  if (!hasOpenAI && !hasClaude) return 'none';
+  
+  // Both available - choose based on mode
+  switch(mode) {
+    case 'explanation':
+    case 'discovery':
+      return 'claude'; // Claude excels at explanations and Socratic method
+    case 'practice':
+    case 'challenge':
+    case 'review':
+      return 'openai'; // GPT-4 better for structured exercises
     default:
-      return availableModels.openai ? 'openai' : 'claude'; // Fallback to available model
+      return 'openai';
   }
 };
 
-/**
- * Generate learning-optimized prompts based on mode
- */
-const generateLearningPrompt = (learningMode, subject, ageGroup, userInput, conversationHistory = []) => {
+// Enhanced prompts for each learning mode
+const getLearningPrompt = (mode, subject, ageGroup, message) => {
   const ageContext = {
-    'elementary': 'a curious elementary school student (ages 6-11)',
-    'middle': 'an engaged middle school student (ages 11-14)', 
-    'high': 'a motivated high school student (ages 14-18)',
-    'adult': 'an adult learner'
+    elementary: "Explain simply for a young student (ages 5-10). Use fun examples and avoid complex terms.",
+    middle: "Explain for a middle school student (ages 10-14). Balance detail with clarity.",
+    high: "Explain for a high school student (ages 14-18). Include more depth and connections.",
+    adult: "Provide a comprehensive explanation with full context and nuance."
   };
 
-  const studentDescription = ageContext[ageGroup] || ageContext['middle'];
-  
-  // Base instruction that mimics Study Mode behavior
-  const baseInstruction = `You are Lilibet, an educational AI tutor specializing in guided learning. You're helping ${studentDescription} learn ${subject}. Your goal is to guide learning through questioning and discovery, not just provide answers.`;
+  const baseContext = `You are Lilibet, an encouraging AI tutor helping a ${ageGroup} student with ${subject}. ${ageContext[ageGroup] || ageContext.middle}`;
 
-  const modeInstructions = {
-    [LEARNING_MODES.DISCOVERY]: `
-${baseInstruction}
+  const modePrompts = {
+    discovery: `${baseContext}
+Use the Socratic method - ask guiding questions to help the student discover the answer themselves.
+Don't give direct answers immediately. Instead:
+1. Ask what they already know
+2. Guide them with hints
+3. Encourage their thinking process
+4. Celebrate their discoveries`,
 
-DISCOVERY MODE - Use Socratic questioning:
-- Ask 2-3 guiding questions that lead the student to discover the answer
-- Use questions like "What do you think might happen if...?" or "How does this connect to what you already know?"
-- If they're stuck, provide a small hint and ask another question
-- Encourage critical thinking with "What evidence supports that?" or "Why do you think that's true?"
-- Never give direct answers - always guide them to the solution
+    practice: `${baseContext}
+Create a step-by-step practice exercise. 
+1. Start with a simple example
+2. Break it into manageable steps
+3. Provide immediate feedback
+4. Gradually increase difficulty
+5. Celebrate progress`,
 
-Current question: "${userInput}"
-Guide them to discover the answer through thoughtful questions.`,
+    explanation: `${baseContext}
+Provide a clear, engaging explanation.
+1. Start with the basic concept
+2. Use relatable examples
+3. Build complexity gradually
+4. Check understanding with questions
+5. Encourage questions`,
 
-    [LEARNING_MODES.PRACTICE]: `
-${baseInstruction}
+    challenge: `${baseContext}
+Present an engaging challenge that tests understanding.
+1. Start with an interesting problem
+2. Encourage problem-solving strategies
+3. Provide hints if needed
+4. Celebrate creative thinking
+5. Explain the solution thoroughly`,
 
-PRACTICE MODE - Step-by-step skill building:
-- Break the problem into smaller, manageable steps
-- Provide one step at a time and wait for student response
-- Offer gentle correction if they make mistakes
-- Give encouragement and positive reinforcement
-- Create similar practice problems to reinforce learning
-- Ask "Can you try the next step?" or "What would you do next?"
-
-Current practice request: "${userInput}"
-Help them build skills through guided practice.`,
-
-    [LEARNING_MODES.EXPLANATION]: `
-${baseInstruction}
-
-EXPLANATION MODE - Build understanding with connections:
-- Start with what they already know and build from there
-- Use analogies and real-world examples appropriate for their age
-- Break complex concepts into digestible parts
-- Connect new ideas to previously learned concepts
-- Ask understanding checks like "Does this make sense so far?"
-- Use visual descriptions and concrete examples
-
-Current concept to explain: "${userInput}"
-Help them understand by connecting to familiar ideas.`,
-
-    [LEARNING_MODES.CHALLENGE]: `
-${baseInstruction}
-
-CHALLENGE MODE - Problem-solving application:
-- Present the problem and ask how they would approach it
-- Guide them through problem-solving strategies
-- Ask "What's your first step?" or "What information do you need?"
-- If stuck, provide strategic hints, not direct answers
-- Encourage multiple solution approaches
-- Celebrate problem-solving process, not just correct answers
-
-Current challenge: "${userInput}"
-Guide them through systematic problem-solving.`,
-
-    [LEARNING_MODES.REVIEW]: `
-${baseInstruction}
-
-REVIEW MODE - Knowledge checking and reinforcement:
-- Ask questions to check their understanding
-- Provide immediate feedback on their responses
-- Identify knowledge gaps and address them
-- Create quick review questions based on the topic
-- Summarize key points they've learned
-- Build confidence through positive reinforcement
-
-Current review topic: "${userInput}"
-Check their understanding and reinforce learning.`
+    review: `${baseContext}
+Help reinforce and review the concept.
+1. Summarize key points
+2. Check understanding with questions
+3. Clarify any confusion
+4. Connect to previous learning
+5. Suggest next steps`
   };
 
-  return modeInstructions[learningMode] || modeInstructions[LEARNING_MODES.DISCOVERY];
+  return modePrompts[mode] || modePrompts.discovery;
 };
 
-/**
- * Call OpenAI with learning-optimized prompt
- */
-const callOpenAILearningMode = async (client, prompt, conversationHistory = []) => {
-  if (!client) {
-    throw new Error('OpenAI client not provided');
+// Call OpenAI with learning optimization (FIXED FOR NEW API)
+const callOpenAILearningMode = async (message, subject, ageGroup, mode) => {
+  if (!openaiClient) {
+    throw new Error('OpenAI client not initialized');
   }
 
+  const systemPrompt = getLearningPrompt(mode, subject, ageGroup, message);
+  
   try {
-    // Prepare messages with learning context
-    const messages = [
-      { role: 'system', content: prompt },
-      ...conversationHistory.slice(-6), // Keep last 6 messages for context
-    ];
+    // Determine which model to use based on what's available
+    let modelToUse = 'gpt-4o-mini'; // Default model
+    
+    // Try to use better models if available
+    try {
+      // Check if GPT-4o is available (it should be with most API keys)
+      modelToUse = 'gpt-4o-mini'; // Using mini for cost efficiency
+    } catch (e) {
+      console.log('Using default model: gpt-4o-mini');
+    }
 
-    const response = await client.chat.completions.create({
-      model: 'gpt-5-mini',
-      messages: messages,
-      max_tokens: 500,
-      temperature: 0.7, // Slightly creative but focused
+    const completion = await openaiClient.chat.completions.create({
+      model: modelToUse,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message }
+      ],
+      max_completion_tokens: 500,  // FIXED: Using max_completion_tokens instead of max_tokens
+      temperature: mode === 'practice' ? 0.3 : 0.7,
+      presence_penalty: 0.1,
+      frequency_penalty: 0.1
     });
 
-    return response.choices[0].message.content;
+    return completion.choices[0].message.content;
   } catch (error) {
-    console.error('OpenAI learning mode error:', error);
+    console.error('OpenAI Learning Mode Error:', error);
+    
+    // If the error is about the parameter, try with older parameter name
+    if (error.message && error.message.includes('max_completion_tokens')) {
+      try {
+        const completion = await openaiClient.chat.completions.create({
+          model: 'gpt-3.5-turbo', // Fall back to older model
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message }
+          ],
+          max_tokens: 500,  // Use old parameter for older model
+          temperature: mode === 'practice' ? 0.3 : 0.7,
+          presence_penalty: 0.1,
+          frequency_penalty: 0.1
+        });
+        return completion.choices[0].message.content;
+      } catch (fallbackError) {
+        console.error('Fallback to GPT-3.5 also failed:', fallbackError);
+        throw fallbackError;
+      }
+    }
+    
     throw error;
   }
 };
 
-/**
- * Call Claude with learning-optimized prompt
- */
-const callClaudeLearningMode = async (client, prompt, conversationHistory = []) => {
-  if (!client) {
-    throw new Error('Claude client not provided');
+// Call Claude with learning optimization
+const callClaudeLearningMode = async (message, subject, ageGroup, mode) => {
+  if (!claudeClient) {
+    throw new Error('Claude client not initialized');
   }
 
+  const systemPrompt = getLearningPrompt(mode, subject, ageGroup, message);
+  
   try {
-    // Prepare conversation for Claude
-    const messages = conversationHistory.slice(-6).map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
-
-    const response = await client.messages.create({
+    const response = await claudeClient.messages.create({
       model: 'claude-3-5-haiku-20241022',
       max_tokens: 500,
-      system: prompt,
-      messages: messages,
+      temperature: mode === 'practice' ? 0.3 : 0.7,
+      system: systemPrompt,
+      messages: [
+        { role: "user", content: message }
+      ]
     });
 
     return response.content[0].text;
   } catch (error) {
-    console.error('Claude learning mode error:', error);
+    console.error('Claude Learning Mode Error:', error);
     throw error;
   }
 };
 
-/**
- * Main learning engine function - intelligently routes to best learning approach
- */
-const processLearningInteraction = async (userInput, options = {}) => {
+// Fallback response when both APIs fail
+const getFallbackResponse = (mode, message) => {
+  const fallbacks = {
+    discovery: "That's a great question! Let me help you explore this. What do you already know about this topic? What makes you curious about it?",
+    practice: "Let's work through this step by step. First, can you tell me what part you'd like to practice? We'll start simple and build up your skills!",
+    explanation: "I'd love to explain this to you! While I'm having some technical difficulties, let's think about it together. What specific part would you like to understand better?",
+    challenge: "You're ready for a challenge! Here's something to think about: How would you approach solving this type of problem? What strategies have worked for you before?",
+    review: "Let's review what we've learned. Can you tell me what you remember about this topic? What parts were most interesting or confusing?"
+  };
+  
+  return fallbacks[mode] || "I'm here to help you learn! Can you tell me more about what you'd like to know?";
+};
+
+// Main learning interaction processor
+const processLearningInteraction = async (message, subject, ageGroup, hasOpenAI = true, hasClaude = true) => {
   try {
-    // Extract options with proper defaults
-    const subject = options.subject || 'general';
-    const ageGroup = options.ageGroup || 'middle';
-    const conversationHistory = options.conversationHistory || [];
-    const parentalSettings = options.parentalSettings || null;
-    const openaiClient = options.openaiClient || null;
-    const claudeClient = options.claudeClient || null;
-
-    console.log(`🔧 Learning engine received - OpenAI: ${!!openaiClient}, Claude: ${!!claudeClient}`);
-
-    // Step 1: Detect optimal learning mode
-    const learningMode = detectLearningMode(userInput, conversationHistory, ageGroup);
-    console.log(`🎯 Learning mode detected: ${learningMode}`);
-
-    // Step 2: Check which models are available
-    const availableModels = {
-      openai: !!openaiClient,
-      claude: !!claudeClient
-    };
-
-    // Step 3: Choose optimal AI model for this learning mode
-    const optimalModel = chooseOptimalModel(learningMode, availableModels);
-    console.log(`🤖 Using model: ${optimalModel} (OpenAI: ${availableModels.openai}, Claude: ${availableModels.claude})`);
-
-    // Step 4: Validate we have at least one model available
-    if (!openaiClient && !claudeClient) {
-      throw new Error('No AI models available');
-    }
-
-    // Step 5: Generate learning-optimized prompt
-    const learningPrompt = generateLearningPrompt(
-      learningMode, 
-      subject, 
-      ageGroup, 
-      userInput, 
-      conversationHistory
-    );
-
-    // Step 6: Apply parental controls if needed
-    let finalPrompt = learningPrompt;
-    if (parentalSettings && parentalSettings.restrictedTopics) {
-      finalPrompt += `\n\nIMPORTANT: Avoid these restricted topics: ${parentalSettings.restrictedTopics.join(', ')}. Keep content appropriate for ${ageGroup} age group.`;
-    }
-
-    // Step 7: Add user message to conversation
-    const updatedHistory = [
-      ...conversationHistory,
-      { role: 'user', content: userInput }
-    ];
-
-    // Step 8: Call optimal AI model with proper fallback
-    let response;
-    let actualModelUsed = optimalModel;
+    // Detect learning mode
+    const mode = detectLearningMode(message);
+    console.log(`🎯 Learning mode detected: ${mode}`);
     
-    if (optimalModel === 'claude' && claudeClient) {
-      response = await callClaudeLearningMode(claudeClient, finalPrompt, updatedHistory);
-    } else if (optimalModel === 'openai' && openaiClient) {
-      response = await callOpenAILearningMode(openaiClient, finalPrompt, updatedHistory);
-    } else if (openaiClient) {
-      // Fallback to OpenAI if Claude was preferred but not available
-      response = await callOpenAILearningMode(openaiClient, finalPrompt, updatedHistory);
-      actualModelUsed = 'openai';
-      console.log('🔄 Fell back to OpenAI');
-    } else if (claudeClient) {
-      // Fallback to Claude if OpenAI was preferred but not available
-      response = await callClaudeLearningMode(claudeClient, finalPrompt, updatedHistory);
-      actualModelUsed = 'claude';
-      console.log('🔄 Fell back to Claude');
-    } else {
-      throw new Error('No AI models available');
+    // Select optimal model
+    const selectedModel = selectOptimalModel(mode, hasOpenAI, hasClaude);
+    console.log(`🤖 Using model: ${selectedModel} (OpenAI: ${hasOpenAI}, Claude: ${hasClaude})`);
+    
+    let response;
+    
+    // Try primary model
+    try {
+      if (selectedModel === 'openai') {
+        response = await callOpenAILearningMode(message, subject, ageGroup, mode);
+      } else if (selectedModel === 'claude') {
+        response = await callClaudeLearningMode(message, subject, ageGroup, mode);
+      } else {
+        response = getFallbackResponse(mode, message);
+      }
+    } catch (primaryError) {
+      console.error(`Primary model (${selectedModel}) failed:`, primaryError);
+      
+      // Try alternate model
+      try {
+        if (selectedModel === 'openai' && hasClaude) {
+          console.log('Falling back to Claude...');
+          response = await callClaudeLearningMode(message, subject, ageGroup, mode);
+        } else if (selectedModel === 'claude' && hasOpenAI) {
+          console.log('Falling back to OpenAI...');
+          response = await callOpenAILearningMode(message, subject, ageGroup, mode);
+        } else {
+          response = getFallbackResponse(mode, message);
+        }
+      } catch (secondaryError) {
+        console.error('Secondary model also failed:', secondaryError);
+        response = getFallbackResponse(mode, message);
+      }
     }
-
-    // Step 9: Return enhanced response with metadata
+    
+    console.log(`🤖 Learning response generated using ${selectedModel} in ${mode} mode`);
+    
+    // Return response with metadata
     return {
       response,
       metadata: {
-        learningMode,
-        modelUsed: actualModelUsed,
-        modelRequested: optimalModel,
+        mode,
+        model: selectedModel,
         subject,
         ageGroup,
         timestamp: new Date().toISOString()
       }
     };
-
   } catch (error) {
     console.error('Learning engine error:', error);
-    
-    // Fallback to basic response
+    // Always return something educational
     return {
-      response: "I'm having trouble right now, but I'm here to help you learn! Could you ask your question in a different way?",
+      response: getFallbackResponse('discovery', message),
       metadata: {
-        learningMode: 'fallback',
-        modelUsed: 'none',
+        mode: 'discovery',
+        model: 'fallback',
+        subject,
+        ageGroup,
         error: error.message,
         timestamp: new Date().toISOString()
       }
@@ -338,67 +312,19 @@ const processLearningInteraction = async (userInput, options = {}) => {
   }
 };
 
-/**
- * Analyze learning effectiveness from conversation
- */
-const analyzeLearningEffectiveness = (conversationHistory) => {
-  if (!conversationHistory || conversationHistory.length < 4) {
-    return {
-      engagement: 'insufficient_data',
-      understanding: 'unknown',
-      recommendations: ['Continue conversation to assess learning']
-    };
-  }
-
-  const studentMessages = conversationHistory.filter(msg => msg.role === 'user');
-  const tutorMessages = conversationHistory.filter(msg => msg.role === 'assistant');
-
-  // Analyze engagement
-  const avgStudentLength = studentMessages.reduce((sum, msg) => sum + msg.content.length, 0) / studentMessages.length;
-  const engagement = avgStudentLength > 20 ? 'high' : avgStudentLength > 10 ? 'medium' : 'low';
-
-  // Analyze understanding signals
-  const understandingSignals = {
-    questions: studentMessages.some(msg => msg.content.includes('?')),
-    confusion: studentMessages.some(msg => 
-      msg.content.toLowerCase().includes('confused') || 
-      msg.content.toLowerCase().includes("don't understand")
-    ),
-    confidence: studentMessages.some(msg => 
-      msg.content.toLowerCase().includes('i think') || 
-      msg.content.toLowerCase().includes('maybe')
-    )
-  };
-
-  let understanding = 'progressing';
-  if (understandingSignals.confusion) understanding = 'struggling';
-  if (understandingSignals.confidence && !understandingSignals.confusion) understanding = 'good';
-
-  // Generate recommendations
-  const recommendations = [];
-  if (engagement === 'low') {
-    recommendations.push('Try more interactive questions to increase engagement');
-  }
-  if (understanding === 'struggling') {
-    recommendations.push('Break down concepts into smaller steps');
-    recommendations.push('Use more concrete examples and analogies');
-  }
-  if (understanding === 'good') {
-    recommendations.push('Ready for more challenging questions');
-    recommendations.push('Consider introducing related concepts');
-  }
-
+// Check if APIs are properly configured
+const checkAPIStatus = () => {
   return {
-    engagement,
-    understanding,
-    recommendations
+    openai: !!openaiClient,
+    claude: !!claudeClient,
+    ready: !!openaiClient || !!claudeClient
   };
 };
 
 module.exports = {
-  LEARNING_MODES,
   detectLearningMode,
-  chooseOptimalModel,
+  selectOptimalModel,
   processLearningInteraction,
-  analyzeLearningEffectiveness
+  checkAPIStatus,
+  getLearningPrompt
 };

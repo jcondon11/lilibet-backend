@@ -11,16 +11,18 @@ if (process.env.OPENAI_API_KEY) {
   openaiClient = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
   });
-  console.log('✅ OpenAI API Key: ✅ Set');
+  console.log('✅ OpenAI client initialized');
 } else {
   console.log('⚠️ OpenAI API Key: Not configured');
 }
 
-if (process.env.CLAUDE_API_KEY) {
+if (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY) {
+  // Try both possible env variable names
+  const apiKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
   claudeClient = new Anthropic({
-    apiKey: process.env.CLAUDE_API_KEY
+    apiKey: apiKey
   });
-  console.log('✅ Claude API Key: ✅ Set');
+  console.log('✅ Claude client initialized');
 } else {
   console.log('⚠️ Claude API Key: Not configured');
 }

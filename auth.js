@@ -54,25 +54,32 @@ const initializeDatabase = async () => {
       `);
       console.log('✅ Enhanced users table with new columns');
 
-      // Add constraints after columns exist
-      await client.query(`
-        ALTER TABLE users 
-        ADD CONSTRAINT IF NOT EXISTS users_username_unique UNIQUE (username),
-        ADD CONSTRAINT IF NOT EXISTS users_user_type_check CHECK (user_type IN ('student', 'parent'))
-      `);
-      console.log('✅ User table constraints added');
-
-      // Add foreign key constraint if it doesn't exist
+      // Add constraints after columns exist (with proper error handling)
       try {
-        await client.query(`
-          ALTER TABLE users 
-          ADD CONSTRAINT IF NOT EXISTS users_parent_id_fkey 
-          FOREIGN KEY (parent_id) REFERENCES users(id)
-        `);
-      } catch (fkError) {
-        // Foreign key might already exist, that's ok
-        console.log('⚠️ Parent foreign key constraint may already exist');
+        await client.query(`ALTER TABLE users ADD CONSTRAINT users_username_unique UNIQUE (username)`);
+      } catch (constraintError) {
+        if (!constraintError.message.includes('already exists')) {
+          console.log('⚠️ Username unique constraint issue:', constraintError.message);
+        }
       }
+
+      try {
+        await client.query(`ALTER TABLE users ADD CONSTRAINT users_user_type_check CHECK (user_type IN ('student', 'parent'))`);
+      } catch (constraintError) {
+        if (!constraintError.message.includes('already exists')) {
+          console.log('⚠️ User type check constraint issue:', constraintError.message);
+        }
+      }
+
+      try {
+        await client.query(`ALTER TABLE users ADD CONSTRAINT users_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES users(id)`);
+      } catch (constraintError) {
+        if (!constraintError.message.includes('already exists')) {
+          console.log('⚠️ Parent foreign key constraint issue:', constraintError.message);
+        }
+      }
+
+      console.log('✅ User table constraints processed');
 
     } catch (userTableError) {
       console.error('Error with users table:', userTableError);

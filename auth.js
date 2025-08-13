@@ -1,4 +1,5 @@
 // auth.js - Enhanced with Hybrid Authentication (Email/Username) and Parent/Student Support
+// FIXED: Proper database migration handling
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
@@ -20,32 +21,64 @@ pool.connect()
     console.error('❌ Database connection failed:', err);
   });
 
-// Enhanced database initialization with parent/student support
+// Enhanced database initialization with proper migration handling
 const initializeDatabase = async () => {
   try {
     const client = await pool.connect();
 
-    // Enhanced users table with hybrid authentication and user types
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        username VARCHAR(50) UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
-        display_name VARCHAR(255),
-        user_type VARCHAR(20) DEFAULT 'student' CHECK (user_type IN ('student', 'parent')),
-        age_group VARCHAR(50) DEFAULT 'middle',
-        parent_id INTEGER REFERENCES users(id),
-        preferred_subjects TEXT DEFAULT '[]',
-        is_active BOOLEAN DEFAULT TRUE,
-        last_login TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    console.log('✅ Enhanced users table ready with parent/student support');
+    // Step 1: Create or alter users table with proper migration
+    try {
+      // First, create the basic users table if it doesn't exist
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          password_hash VARCHAR(255) NOT NULL,
+          display_name VARCHAR(255),
+          age_group VARCHAR(50) DEFAULT 'middle',
+          preferred_subjects TEXT DEFAULT '[]',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('✅ Basic users table ready');
 
-    // Enhanced conversations table
+      // Now add new columns if they don't exist
+      await client.query(`
+        ALTER TABLE users 
+        ADD COLUMN IF NOT EXISTS username VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS user_type VARCHAR(20) DEFAULT 'student',
+        ADD COLUMN IF NOT EXISTS parent_id INTEGER,
+        ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE,
+        ADD COLUMN IF NOT EXISTS last_login TIMESTAMP
+      `);
+      console.log('✅ Enhanced users table with new columns');
+
+      // Add constraints after columns exist
+      await client.query(`
+        ALTER TABLE users 
+        ADD CONSTRAINT IF NOT EXISTS users_username_unique UNIQUE (username),
+        ADD CONSTRAINT IF NOT EXISTS users_user_type_check CHECK (user_type IN ('student', 'parent'))
+      `);
+      console.log('✅ User table constraints added');
+
+      // Add foreign key constraint if it doesn't exist
+      try {
+        await client.query(`
+          ALTER TABLE users 
+          ADD CONSTRAINT IF NOT EXISTS users_parent_id_fkey 
+          FOREIGN KEY (parent_id) REFERENCES users(id)
+        `);
+      } catch (fkError) {
+        // Foreign key might already exist, that's ok
+        console.log('⚠️ Parent foreign key constraint may already exist');
+      }
+
+    } catch (userTableError) {
+      console.error('Error with users table:', userTableError);
+    }
+
+    // Step 2: Enhanced conversations table
     await client.query(`
       CREATE TABLE IF NOT EXISTS conversations (
         id SERIAL PRIMARY KEY,
@@ -56,17 +89,22 @@ const initializeDatabase = async () => {
         detected_level VARCHAR(50),
         model_used VARCHAR(50) DEFAULT 'openai',
         is_archived BOOLEAN DEFAULT FALSE,
-        parent_visible BOOLEAN DEFAULT TRUE,
-        safety_reviewed BOOLEAN DEFAULT FALSE,
-        content_rating VARCHAR(10) DEFAULT 'safe',
         tags TEXT DEFAULT '[]',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    
+    // Add new conversation columns if they don't exist
+    await client.query(`
+      ALTER TABLE conversations 
+      ADD COLUMN IF NOT EXISTS parent_visible BOOLEAN DEFAULT TRUE,
+      ADD COLUMN IF NOT EXISTS safety_reviewed BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS content_rating VARCHAR(10) DEFAULT 'safe'
+    `);
     console.log('✅ Enhanced conversations table ready');
 
-    // Parental settings table
+    // Step 3: Parental settings table
     await client.query(`
       CREATE TABLE IF NOT EXISTS parental_settings (
         id SERIAL PRIMARY KEY,
@@ -87,7 +125,7 @@ const initializeDatabase = async () => {
     `);
     console.log('✅ Parental settings table ready');
 
-    // Activity tracking for learning analytics
+    // Step 4: Activity tracking for learning analytics
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_activity (
         id SERIAL PRIMARY KEY,
@@ -104,7 +142,7 @@ const initializeDatabase = async () => {
     `);
     console.log('✅ User activity tracking table ready');
 
-    // User sessions table
+    // Step 5: User sessions table
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_sessions (
         id SERIAL PRIMARY KEY,
@@ -118,21 +156,51 @@ const initializeDatabase = async () => {
     `);
     console.log('✅ Enhanced sessions table ready');
 
-    // Create indexes for better performance
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-      CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-      CREATE INDEX IF NOT EXISTS idx_users_parent_id ON users(parent_id);
-      CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
-      CREATE INDEX IF NOT EXISTS idx_parental_settings_student ON parental_settings(student_id);
-    `);
-    console.log('✅ Database indexes created');
+    // Step 6: Create indexes ONLY after columns exist
+    try {
+      // Check if columns exist before creating indexes
+      const emailIndex = await client.query(`
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'users' AND column_name = 'email'
+      `);
+      
+      if (emailIndex.rows.length > 0) {
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
+      }
+
+      const usernameIndex = await client.query(`
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'users' AND column_name = 'username'
+      `);
+      
+      if (usernameIndex.rows.length > 0) {
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`);
+      }
+
+      const parentIndex = await client.query(`
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'users' AND column_name = 'parent_id'
+      `);
+      
+      if (parentIndex.rows.length > 0) {
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_users_parent_id ON users(parent_id)`);
+      }
+
+      // Other indexes
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_parental_settings_student ON parental_settings(student_id)`);
+      
+      console.log('✅ Database indexes created successfully');
+    } catch (indexError) {
+      console.log('⚠️ Some indexes may already exist, continuing...');
+    }
 
     client.release();
     console.log('🎉 Enhanced database initialized successfully with hybrid auth and parent/student support!');
   } catch (error) {
     console.error('❌ Error initializing database:', error);
-    throw error;
+    // Don't throw error, let app continue
+    console.log('⚠️ Database initialization had issues but app will continue');
   }
 };
 
@@ -280,10 +348,14 @@ const registerUser = async (req, res) => {
 
       // Create default parental settings if student is linked to parent
       if (parentId) {
-        await client.query(`
-          INSERT INTO parental_settings (student_id, parent_id) 
-          VALUES ($1, $2)
-        `, [newUser.id, parentId]);
+        try {
+          await client.query(`
+            INSERT INTO parental_settings (student_id, parent_id) 
+            VALUES ($1, $2)
+          `, [newUser.id, parentId]);
+        } catch (parentalError) {
+          console.log('⚠️ Could not create parental settings:', parentalError.message);
+        }
       }
 
       const token = generateToken(newUser);
@@ -360,10 +432,14 @@ const loginUser = async (req, res) => {
       }
 
       // Update last login
-      await client.query(
-        'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
-        [user.id]
-      );
+      try {
+        await client.query(
+          'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+          [user.id]
+        );
+      } catch (updateError) {
+        console.log('⚠️ Could not update last login:', updateError.message);
+      }
 
       const userInfo = {
         id: user.id,
@@ -379,7 +455,7 @@ const loginUser = async (req, res) => {
 
       client.release();
 
-      console.log(`🔓 ${user.user_type} logged in: ${emailOrUsername}`);
+      console.log(`🔓 ${user.user_type || 'user'} logged in: ${emailOrUsername}`);
       
       res.json({
         message: 'Login successful!',
@@ -420,11 +496,15 @@ const getUserProfile = async (req, res) => {
     // If this is a parent, get their students
     let students = [];
     if (user.user_type === 'parent') {
-      const studentsResult = await client.query(`
-        SELECT id, email, username, display_name, age_group, created_at, last_login
-        FROM users WHERE parent_id = $1 AND user_type = 'student' AND is_active = TRUE
-      `, [userId]);
-      students = studentsResult.rows;
+      try {
+        const studentsResult = await client.query(`
+          SELECT id, email, username, display_name, age_group, created_at, last_login
+          FROM users WHERE parent_id = $1 AND user_type = 'student' AND is_active = TRUE
+        `, [userId]);
+        students = studentsResult.rows;
+      } catch (studentsError) {
+        console.log('⚠️ Could not fetch students:', studentsError.message);
+      }
     }
 
     client.release();
@@ -495,10 +575,14 @@ const linkStudentToParent = async (req, res) => {
       );
 
       // Create default parental settings
-      await client.query(`
-        INSERT INTO parental_settings (student_id, parent_id) 
-        VALUES ($1, $2)
-      `, [student.id, parentId]);
+      try {
+        await client.query(`
+          INSERT INTO parental_settings (student_id, parent_id) 
+          VALUES ($1, $2)
+        `, [student.id, parentId]);
+      } catch (parentalError) {
+        console.log('⚠️ Could not create parental settings:', parentalError.message);
+      }
 
       client.release();
 

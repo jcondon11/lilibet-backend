@@ -444,6 +444,60 @@ app.get('/api/create-test-parent/:secretkey', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Create invitation code for existing student
+app.get('/api/create-test-invitation/:secretkey', async (req, res) => {
+  if (req.params.secretkey !== 'temporary123') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  try {
+    const { Pool } = require('pg');
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    });
+
+    const client = await pool.connect();
+    
+    // Find the test student
+    const studentResult = await client.query(
+      "SELECT id FROM users WHERE email IN ('student@test.com', 'test@example.com') LIMIT 1"
+    );
+    
+    if (studentResult.rows.length === 0) {
+      client.release();
+      return res.status(404).json({ error: 'No test student found. Run seed-test-data first.' });
+    }
+    
+    const studentId = studentResult.rows[0].id;
+    
+    // Generate a 6-character invitation code
+    const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    
+    // Create the invitation
+    await client.query(
+      `INSERT INTO parent_student_links (student_id, invitation_code, status)
+       VALUES ($1, $2, 'pending')
+       ON CONFLICT (student_id, invitation_code) DO UPDATE SET invitation_code = $2`,
+      [studentId, inviteCode]
+    );
+    
+    client.release();
+    
+    res.json({
+      success: true,
+      message: 'Invitation code created!',
+      invitationCode: inviteCode,
+      instructions: 'Use this code when registering as a parent',
+      studentId: studentId
+    });
+    
+  } catch (error) {
+    console.error('Error creating invitation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 // END OF TEMPORARY ENDPOINTS
 
 // Initialize database and start server

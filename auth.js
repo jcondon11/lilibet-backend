@@ -1,4 +1,4 @@
-// auth.js - Debug Version with Enhanced Logging
+// auth.js - Complete Authentication with Parent-Student Linking
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
@@ -20,7 +20,7 @@ pool.connect()
     console.error('❌ Database connection failed:', err);
   });
 
-// Enhanced database initialization with username support
+// Enhanced database initialization with parent-student linking
 const initializeDatabase = async () => {
   try {
     const client = await pool.connect();
@@ -100,18 +100,35 @@ const initializeDatabase = async () => {
     `);
     console.log('✅ Enhanced sessions table ready');
 
+    // NEW: Parent-Student Linking Table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS parent_student_links (
+        id SERIAL PRIMARY KEY,
+        parent_id INTEGER REFERENCES users(id),
+        student_id INTEGER REFERENCES users(id),
+        status VARCHAR(20) DEFAULT 'pending',
+        invitation_code VARCHAR(10) UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        accepted_at TIMESTAMP,
+        UNIQUE(parent_id, student_id)
+      )
+    `);
+    console.log('✅ Parent-Student linking table ready');
+
     // Create indexes safely
     try {
       await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_parent_links_parent ON parent_student_links(parent_id)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_parent_links_student ON parent_student_links(student_id)`);
       console.log('✅ Database indexes created successfully');
     } catch (indexError) {
       console.log('⚠️ Some indexes may already exist, continuing...');
     }
 
     client.release();
-    console.log('🎉 Enhanced database initialized successfully with email/username support!');
+    console.log('🎉 Enhanced database initialized successfully with parent-student linking!');
   } catch (error) {
     console.error('❌ Error initializing database:', error);
     console.log('⚠️ Database initialization had issues but app will continue');
@@ -132,7 +149,7 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      console.log('🔒 Invalid token attempt');
+      console.log('🔑 Invalid token attempt');
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
     req.user = user;
@@ -172,7 +189,7 @@ const isValidUsername = (username) => {
   return usernameRegex.test(username);
 };
 
-// ENHANCED: Register user with optional username
+// ENHANCED: Register user with optional parent invitation code
 const registerUser = async (req, res) => {
   try {
     console.log('📝 Registration attempt started');
@@ -184,7 +201,8 @@ const registerUser = async (req, res) => {
       password, 
       displayName, 
       userType = 'student',
-      ageGroup = 'middle'
+      ageGroup = 'middle',
+      parentInviteCode // NEW: Optional parent invitation code
     } = req.body;
 
     // Validation
@@ -250,8 +268,8 @@ const registerUser = async (req, res) => {
         VALUES ($1, $2, $3, $4, $5, $6) 
         RETURNING id, email, username, display_name, user_type, age_group
       `, [
-        email.toLowerCase(), // Store email in lowercase
-        username ? username.toLowerCase() : null, // Store username in lowercase
+        email.toLowerCase(),
+        username ? username.toLowerCase() : null,
         passwordHash, 
         displayName || email.split('@')[0], 
         userType,
@@ -259,6 +277,27 @@ const registerUser = async (req, res) => {
       ]);
 
       const newUser = result.rows[0];
+
+      // NEW: If parent registering with invite code, link to student
+      if (userType === 'parent' && parentInviteCode) {
+        console.log('🔗 Linking parent to student with code:', parentInviteCode);
+        
+        // Find the student with this invitation code
+        const linkResult = await client.query(`
+          UPDATE parent_student_links 
+          SET parent_id = $1, status = 'active', accepted_at = CURRENT_TIMESTAMP
+          WHERE invitation_code = $2 AND parent_id IS NULL
+          RETURNING student_id
+        `, [newUser.id, parentInviteCode.toUpperCase()]);
+
+        if (linkResult.rows.length > 0) {
+          console.log('✅ Successfully linked to student:', linkResult.rows[0].student_id);
+        } else {
+          console.log('⚠️ Invalid or already used invitation code');
+          // Don't fail registration, just note that linking didn't work
+        }
+      }
+
       const token = generateToken(newUser);
 
       client.release();
@@ -294,22 +333,17 @@ const registerUser = async (req, res) => {
   }
 };
 
-// FIXED: Login with email OR username support
+// Login user (no changes needed)
 const loginUser = async (req, res) => {
   try {
     console.log('🔐 Login attempt started');
     console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
     
-    // SUPPORT BOTH FORMATS: 
-    // New format: { emailOrUsername, password }
-    // Old format: { email, password }
     const { emailOrUsername, email, password } = req.body;
-    
-    // Use emailOrUsername if provided, otherwise fall back to email field
     const loginIdentifier = emailOrUsername || email;
 
     console.log('🔍 Login identifier:', loginIdentifier);
-    console.log('🔍 Password length:', password ? password.length : 0);
+    console.log('🔑 Password length:', password ? password.length : 0);
 
     if (!loginIdentifier || !password) {
       console.log('❌ Missing credentials');
@@ -319,19 +353,12 @@ const loginUser = async (req, res) => {
     const client = await pool.connect();
 
     try {
-      // First, let's check what users exist in the database
-      const allUsersCheck = await client.query('SELECT id, email, username FROM users LIMIT 10');
-      console.log('📊 Sample users in database:', allUsersCheck.rows);
-
-      // Determine if it's an email or username and query accordingly
       let query, params;
       if (isValidEmail(loginIdentifier)) {
-        // Login with email - case insensitive
         console.log('📧 Attempting email login');
         query = 'SELECT * FROM users WHERE LOWER(email) = LOWER($1)';
         params = [loginIdentifier];
       } else {
-        // Login with username - case insensitive
         console.log('👤 Attempting username login');
         query = 'SELECT * FROM users WHERE LOWER(username) = LOWER($1)';
         params = [loginIdentifier];
@@ -344,14 +371,6 @@ const loginUser = async (req, res) => {
 
       if (result.rows.length === 0) {
         console.log('❌ No user found with identifier:', loginIdentifier);
-        
-        // Let's do a more thorough check
-        const emailCheck = await client.query('SELECT id, email FROM users WHERE LOWER(email) = LOWER($1)', [loginIdentifier]);
-        const usernameCheck = await client.query('SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)', [loginIdentifier]);
-        
-        console.log('📧 Email check result:', emailCheck.rows);
-        console.log('👤 Username check result:', usernameCheck.rows);
-        
         client.release();
         return res.status(401).json({ error: 'Invalid credentials - user not found' });
       }
@@ -364,7 +383,6 @@ const loginUser = async (req, res) => {
         hasPassword: !!user.password_hash
       });
 
-      // Verify password
       const passwordMatch = await bcrypt.compare(password, user.password_hash);
       console.log('🔐 Password match result:', passwordMatch);
       
@@ -374,7 +392,6 @@ const loginUser = async (req, res) => {
         return res.status(401).json({ error: 'Invalid credentials - wrong password' });
       }
 
-      // Update last login
       try {
         await client.query(
           'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
@@ -418,7 +435,7 @@ const loginUser = async (req, res) => {
   }
 };
 
-// Enhanced get user profile
+// Get user profile
 const getUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -453,7 +470,150 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-// Save conversation (existing functionality maintained)
+// NEW: Get linked parents for a student
+const getLinkedParents = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    const client = await pool.connect();
+
+    const result = await client.query(`
+      SELECT u.id, u.email, u.display_name, psl.status, psl.created_at
+      FROM parent_student_links psl
+      JOIN users u ON u.id = psl.parent_id
+      WHERE psl.student_id = $1
+      ORDER BY psl.created_at DESC
+    `, [studentId]);
+
+    client.release();
+    
+    res.json({ parents: result.rows });
+
+  } catch (error) {
+    console.error('Get linked parents error:', error);
+    res.status(500).json({ error: 'Failed to get linked parents' });
+  }
+};
+
+// NEW: Get linked students for a parent
+const getLinkedStudents = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const client = await pool.connect();
+
+    const result = await client.query(`
+      SELECT u.id, u.email, u.display_name, u.age_group, psl.status, psl.created_at
+      FROM parent_student_links psl
+      JOIN users u ON u.id = psl.student_id
+      WHERE psl.parent_id = $1 AND psl.status = 'active'
+      ORDER BY psl.created_at DESC
+    `, [parentId]);
+
+    client.release();
+    
+    res.json({ students: result.rows });
+
+  } catch (error) {
+    console.error('Get linked students error:', error);
+    res.status(500).json({ error: 'Failed to get linked students' });
+  }
+};
+
+// NEW: Create parent invitation
+const createParentInvitation = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    const { parentEmail, invitationCode } = req.body;
+
+    const client = await pool.connect();
+
+    // Create or update invitation record
+    const result = await client.query(`
+      INSERT INTO parent_student_links (student_id, invitation_code, status)
+      VALUES ($1, $2, 'pending')
+      ON CONFLICT (invitation_code) DO UPDATE
+      SET student_id = $1
+      RETURNING id
+    `, [studentId, invitationCode.toUpperCase()]);
+
+    client.release();
+
+    // In a real app, you'd send an email here
+    console.log(`📧 Would send invitation email to ${parentEmail} with code ${invitationCode}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Invitation created',
+      invitationCode: invitationCode 
+    });
+
+  } catch (error) {
+    console.error('Create invitation error:', error);
+    res.status(500).json({ error: 'Failed to create invitation' });
+  }
+};
+
+// NEW: Remove parent-student link
+const unlinkParent = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    const { parentId } = req.params;
+
+    const client = await pool.connect();
+
+    await client.query(`
+      UPDATE parent_student_links 
+      SET status = 'revoked'
+      WHERE student_id = $1 AND parent_id = $2
+    `, [studentId, parentId]);
+
+    client.release();
+    
+    res.json({ success: true, message: 'Parent access removed' });
+
+  } catch (error) {
+    console.error('Unlink parent error:', error);
+    res.status(500).json({ error: 'Failed to unlink parent' });
+  }
+};
+
+// NEW: Get conversations for linked students (for parents)
+const getStudentConversations = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { studentId } = req.params;
+    
+    const client = await pool.connect();
+
+    // Verify parent has access to this student
+    const accessCheck = await client.query(`
+      SELECT 1 FROM parent_student_links 
+      WHERE parent_id = $1 AND student_id = $2 AND status = 'active'
+    `, [parentId, studentId]);
+
+    if (accessCheck.rows.length === 0) {
+      client.release();
+      return res.status(403).json({ error: 'No access to this student' });
+    }
+
+    // Get student's conversations (without actual messages for privacy)
+    const result = await client.query(`
+      SELECT id, subject, title, created_at, updated_at, detected_level, model_used
+      FROM conversations 
+      WHERE user_id = $1 
+      ORDER BY updated_at DESC
+    `, [studentId]);
+
+    client.release();
+    
+    res.json({ conversations: result.rows });
+
+  } catch (error) {
+    console.error('Get student conversations error:', error);
+    res.status(500).json({ error: 'Failed to get student conversations' });
+  }
+};
+
+// Save conversation
 const saveConversation = async (req, res) => {
   try {
     const { subject, messages, title } = req.body;
@@ -482,7 +642,7 @@ const saveConversation = async (req, res) => {
   }
 };
 
-// Get user conversations (existing functionality maintained)
+// Get user conversations
 const getUserConversations = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -507,7 +667,7 @@ const getUserConversations = async (req, res) => {
   }
 };
 
-// Get specific conversation (existing functionality maintained)
+// Get specific conversation
 const getConversation = async (req, res) => {
   try {
     const { id } = req.params;
@@ -537,7 +697,7 @@ const getConversation = async (req, res) => {
   }
 };
 
-// Update conversation (existing functionality maintained)
+// Update conversation
 const updateConversation = async (req, res) => {
   try {
     const { id } = req.params;
@@ -569,7 +729,7 @@ const updateConversation = async (req, res) => {
   }
 };
 
-// Logout user (existing functionality maintained)
+// Logout user
 const logoutUser = async (req, res) => {
   res.json({ message: 'Logged out successfully' });
 };
@@ -584,5 +744,11 @@ module.exports = {
   getUserConversations,
   getConversation,
   updateConversation,
-  logoutUser
+  logoutUser,
+  // NEW exports for parent-student linking
+  getLinkedParents,
+  getLinkedStudents,
+  createParentInvitation,
+  unlinkParent,
+  getStudentConversations
 };

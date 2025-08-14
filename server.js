@@ -11,7 +11,12 @@ const {
   getUserConversations,
   getConversation,
   updateConversation,
-  logoutUser 
+  logoutUser,
+  getLinkedParents,
+  getLinkedStudents,
+  createParentInvitation,
+  unlinkParent,
+  getStudentConversations
 } = require('./auth');
 const { 
   processLearningInteraction, 
@@ -101,6 +106,13 @@ app.get('/api/conversations', authenticateToken, getUserConversations);
 app.post('/api/conversations', authenticateToken, saveConversation);
 app.get('/api/conversations/:id', authenticateToken, getConversation);
 app.put('/api/conversations/:id', authenticateToken, updateConversation);
+
+// Parent-Student Linking routes
+app.get('/api/parents/linked', authenticateToken, getLinkedParents);
+app.get('/api/students/linked', authenticateToken, getLinkedStudents);
+app.post('/api/parents/invite', authenticateToken, createParentInvitation);
+app.delete('/api/parents/unlink/:parentId', authenticateToken, unlinkParent);
+app.get('/api/students/:studentId/conversations', authenticateToken, getStudentConversations);
 
 // Main tutoring endpoint with learning engine
 app.post('/api/tutor', authenticateToken, async (req, res) => {

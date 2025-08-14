@@ -1,4 +1,4 @@
-// server.js - Lilibet Backend with Smart Learning Engine (FIXED)
+// server.js - Lilibet Backend with Smart Learning Engine (Fixed)
 const express = require('express');
 const cors = require('cors');
 const { 
@@ -12,11 +12,12 @@ const {
   getConversation,
   updateConversation,
   logoutUser,
-  getLinkedParents,
-  getLinkedStudents,
-  createParentInvitation,
-  unlinkParent,
-  getStudentConversations
+  getLinkedMentors,
+  getLinkedLearners,
+  createMentorInvitation,
+  unlinkMentor,
+  getLearnerConversations,
+  pool
 } = require('./auth');
 const { 
   processLearningInteraction, 
@@ -31,7 +32,7 @@ const PORT = process.env.PORT || 8080;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// CORS configuration
+// FIXED: CORS configuration - strict in production
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -45,13 +46,26 @@ const corsOptions = {
       /^http:\/\/\d+\.\d+\.\d+\.\d+:\d+$/
     ];
     
-    if (!origin || allowedOrigins.some(allowed => 
-      allowed instanceof RegExp ? allowed.test(origin) : allowed === origin
-    )) {
-      callback(null, true);
+    // In production, strictly enforce CORS
+    if (process.env.NODE_ENV === 'production') {
+      if (!origin || allowedOrigins.some(allowed => 
+        allowed instanceof RegExp ? allowed.test(origin) : allowed === origin
+      )) {
+        callback(null, true);
+      } else {
+        console.log('⚠️ CORS blocked origin in production:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
     } else {
-      console.log('⚠️ CORS blocked origin:', origin);
-      callback(null, true); // Allow for development
+      // In development, be more permissive
+      if (!origin || allowedOrigins.some(allowed => 
+        allowed instanceof RegExp ? allowed.test(origin) : allowed === origin
+      )) {
+        callback(null, true);
+      } else {
+        console.log('⚠️ CORS warning - unknown origin in dev:', origin);
+        callback(null, true); // Allow in development only
+      }
     }
   },
   credentials: true,
@@ -60,6 +74,40 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+// Rate limiting middleware (basic implementation)
+const requestCounts = new Map();
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const MAX_REQUESTS = 100; // max requests per minute
+
+const rateLimiter = (req, res, next) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  
+  if (!requestCounts.has(ip)) {
+    requestCounts.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return next();
+  }
+  
+  const ipData = requestCounts.get(ip);
+  
+  if (now > ipData.resetTime) {
+    ipData.count = 1;
+    ipData.resetTime = now + RATE_LIMIT_WINDOW;
+    return next();
+  }
+  
+  if (ipData.count >= MAX_REQUESTS) {
+    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+  }
+  
+  ipData.count++;
+  next();
+};
+
+// Apply rate limiting to auth endpoints
+app.use('/api/auth/register', rateLimiter);
+app.use('/api/auth/login', rateLimiter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -107,17 +155,17 @@ app.post('/api/conversations', authenticateToken, saveConversation);
 app.get('/api/conversations/:id', authenticateToken, getConversation);
 app.put('/api/conversations/:id', authenticateToken, updateConversation);
 
-// Parent-Student Linking routes
-app.get('/api/parents/linked', authenticateToken, getLinkedParents);
-app.get('/api/students/linked', authenticateToken, getLinkedStudents);
-app.post('/api/parents/invite', authenticateToken, createParentInvitation);
-app.delete('/api/parents/unlink/:parentId', authenticateToken, unlinkParent);
-app.get('/api/students/:studentId/conversations', authenticateToken, getStudentConversations);
+// Mentor-Learner Linking routes
+app.get('/api/mentors/linked', authenticateToken, getLinkedMentors);
+app.get('/api/learners/linked', authenticateToken, getLinkedLearners);
+app.post('/api/mentors/invite', authenticateToken, createMentorInvitation);
+app.delete('/api/mentors/unlink/:mentorId', authenticateToken, unlinkMentor);
+app.get('/api/learners/:learnerId/conversations', authenticateToken, getLearnerConversations);
 
-// Main tutoring endpoint with learning engine
+// FIXED: Main tutoring endpoint with proper conversation saving
 app.post('/api/tutor', authenticateToken, async (req, res) => {
   try {
-    const { message, subject = 'General', ageGroup = 'middle' } = req.body;
+    const { message, subject = 'General', skillLevel = 'intermediate' } = req.body;
     const userId = req.user.id;
 
     if (!message) {
@@ -143,7 +191,7 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
     const learningResult = await processLearningInteraction(
       message, 
       subject, 
-      ageGroup,
+      skillLevel,
       apiStatus.openai,
       apiStatus.claude
     );
@@ -163,32 +211,46 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
       }
     ];
 
-    // Try to save conversation (but don't fail the request if it doesn't work)
+    // FIXED: Actually save the conversation to database
     try {
-      // Create a clean object for saving (remove circular references)
-      const conversationData = {
-        user_id: userId,
-        subject: subject,
-        title: `${subject} - ${new Date().toLocaleDateString()}`,
-        messages: JSON.stringify(messages),
-        detected_level: ageGroup,
-        model_used: learningResult.metadata.model,
-        learning_mode: learningResult.metadata.mode
-      };
-
-      // Save to database if you have a direct save function
-      // For now, we'll skip the circular reference issue
-      console.log(`💾 Conversation ready to save for user ${userId}`);
+      const client = await pool.connect();
+      
+      const saveResult = await client.query(`
+        INSERT INTO conversations (
+          user_id, subject, title, messages, detected_level, model_used, learning_mode
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, created_at
+      `, [
+        userId,
+        subject,
+        `${subject} - ${new Date().toLocaleDateString()}`,
+        JSON.stringify(messages),
+        skillLevel,
+        learningResult.metadata.model,
+        learningResult.metadata.mode
+      ]);
+      
+      client.release();
+      
+      console.log(`💾 Conversation saved with ID: ${saveResult.rows[0].id}`);
+      
+      // Send response with conversation ID
+      res.json({
+        response: learningResult.response,
+        metadata: learningResult.metadata,
+        conversationId: saveResult.rows[0].id
+      });
+      
     } catch (saveError) {
-      console.log('⚠️ Could not save conversation:', saveError.message);
-      // Don't fail the request, just log the error
+      console.error('⚠️ Could not save conversation:', saveError.message);
+      // Don't fail the request, still return the response
+      res.json({
+        response: learningResult.response,
+        metadata: learningResult.metadata,
+        warning: 'Conversation was not saved'
+      });
     }
-
-    // Send response
-    res.json({
-      response: learningResult.response,
-      metadata: learningResult.metadata
-    });
 
   } catch (error) {
     console.error('🚨 Tutor endpoint error:', error);
@@ -199,306 +261,19 @@ app.post('/api/tutor', authenticateToken, async (req, res) => {
   }
 });
 
-// TEMPORARY SEED DATA ENDPOINTS - REMOVE AFTER USE
-// Temporary endpoint to seed test data
-app.get('/api/seed-test-data/:secretkey', async (req, res) => {
-  // Basic security - only works with secret key
-  if (req.params.secretkey !== 'temporary123') {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
-
-  try {
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-    });
-
-    const client = await pool.connect();
-
-    // First, get or create a test user
-    let userId;
-    const userCheck = await client.query(
-      "SELECT id FROM users WHERE email = 'test@example.com' OR email = 'student@test.com' LIMIT 1"
-    );
-    
-    if (userCheck.rows.length > 0) {
-      userId = userCheck.rows[0].id;
-      console.log('Using existing user ID:', userId);
-    } else {
-      // Create a test student if none exists
-      const bcrypt = require('bcryptjs');
-      const passwordHash = await bcrypt.hash('password123', 10);
-      
-      const newUser = await client.query(
-        `INSERT INTO users (email, username, password_hash, display_name, user_type, age_group) 
-         VALUES ($1, $2, $3, $4, $5, $6) 
-         RETURNING id`,
-        [
-          'student@test.com',
-          'teststudent',
-          passwordHash,
-          'Test Student',
-          'student',
-          'middle'
-        ]
-      );
-      userId = newUser.rows[0].id;
-      console.log('Created new test user with ID:', userId);
-    }
-
-    // Sample conversation data
-    const conversations = [
-      // Math conversations
-      {
-        subject: 'Math',
-        title: 'Math - Learning Fractions',
-        messages: [
-          { role: 'user', content: 'What are fractions?', timestamp: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'Great question! Fractions are a way to represent parts of a whole. Imagine you have a pizza cut into 8 slices. If you eat 3 slices, you have eaten 3/8 of the pizza!', timestamp: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'explanation', model: 'openai' } }
-        ],
-        daysAgo: 7
-      },
-      {
-        subject: 'Math',
-        title: 'Math - Solving Equations',
-        messages: [
-          { role: 'user', content: 'Can you help me solve x + 5 = 12?', timestamp: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'I would love to help you solve this! Let me guide you through it step by step. First, what do you think we need to do to get x by itself?', timestamp: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'practice', model: 'claude' } }
-        ],
-        daysAgo: 6
-      },
-      {
-        subject: 'Math',
-        title: 'Math - Multiplication Practice',
-        messages: [
-          { role: 'user', content: 'I need practice with multiplication tables', timestamp: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'Excellent! Let us practice multiplication together. What is 7 × 8?', timestamp: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'practice', model: 'openai' } }
-        ],
-        daysAgo: 5
-      },
-      // Science conversations
-      {
-        subject: 'Science',
-        title: 'Science - The Solar System',
-        messages: [
-          { role: 'user', content: 'Tell me about planets', timestamp: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'The solar system is fascinating! We have 8 planets orbiting our Sun. Would you like to explore them from closest to farthest?', timestamp: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'discovery', model: 'claude' } }
-        ],
-        daysAgo: 8
-      },
-      {
-        subject: 'Science',
-        title: 'Science - Photosynthesis',
-        messages: [
-          { role: 'user', content: 'How do plants make food?', timestamp: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'Plants are amazing! They make their own food using sunlight, water, and carbon dioxide through photosynthesis!', timestamp: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'explanation', model: 'openai' } }
-        ],
-        daysAgo: 4
-      },
-      {
-        subject: 'Science',
-        title: 'Science - States of Matter',
-        messages: [
-          { role: 'user', content: 'What is the difference between solid and liquid?', timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'In solids, particles are tightly packed. In liquids, they can slide past each other. Can you think of an example that can be both?', timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'discovery', model: 'claude' } }
-        ],
-        daysAgo: 3
-      },
-      // Reading conversations
-      {
-        subject: 'Reading',
-        title: 'Reading - Story Comprehension',
-        messages: [
-          { role: 'user', content: 'Can you help me understand this story better?', timestamp: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'I would be happy to help! First, tell me what the story is about in your own words?', timestamp: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'explanation', model: 'claude' } }
-        ],
-        daysAgo: 2
-      },
-      {
-        subject: 'Reading',
-        title: 'Reading - Vocabulary Building',
-        messages: [
-          { role: 'user', content: 'What does elaborate mean?', timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'Elaborate means to add more detail or explain something more fully!', timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'explanation', model: 'openai' } }
-        ],
-        daysAgo: 1
-      },
-      // Writing conversations
-      {
-        subject: 'Writing',
-        title: 'Writing - Essay Structure',
-        messages: [
-          { role: 'user', content: 'How do I start an essay?', timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'A good essay starts with a hook, background info, and a thesis statement. What is your topic?', timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'practice', model: 'openai' } }
-        ],
-        daysAgo: 1
-      },
-      // Today's conversations
-      {
-        subject: 'Math',
-        title: 'Math - Division Practice',
-        messages: [
-          { role: 'user', content: 'Help me with 144 divided by 12', timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'Let us solve 144 ÷ 12 together! How many groups of 12 can we make from 144?', timestamp: new Date(Date.now() - 30 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'practice', model: 'openai' } }
-        ],
-        daysAgo: 0
-      },
-      {
-        subject: 'Science',
-        title: 'Science - Weather Patterns',
-        messages: [
-          { role: 'user', content: 'Why does it rain?', timestamp: new Date(Date.now() - 15 * 60 * 1000).toISOString() },
-          { role: 'assistant', content: 'Rain is part of the water cycle! Water evaporates, forms clouds, and falls as rain!', timestamp: new Date(Date.now() - 15 * 60 * 1000 + 60000).toISOString(), metadata: { mode: 'explanation', model: 'claude' } }
-        ],
-        daysAgo: 0
-      }
-    ];
-
-    // Insert all conversations
-    let insertedCount = 0;
-    for (const conv of conversations) {
-      const createdAt = new Date(Date.now() - conv.daysAgo * 24 * 60 * 60 * 1000);
-      
-      await client.query(
-        `INSERT INTO conversations (user_id, subject, title, messages, detected_level, model_used, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          userId,
-          conv.subject,
-          conv.title,
-          JSON.stringify(conv.messages),
-          'middle',
-          conv.messages[1].metadata?.model || 'openai',
-          createdAt,
-          createdAt
-        ]
-      );
-      insertedCount++;
-    }
-
-    client.release();
-
-    res.json({
-      success: true,
-      message: `Successfully added ${insertedCount} test conversations for user ID ${userId}`,
-      userEmail: 'student@test.com',
-      password: 'password123',
-      conversationsAdded: insertedCount,
-      tip: 'Login as parent@test.com to see the dashboard!'
-    });
-
-  } catch (error) {
-    console.error('Error seeding data:', error);
-    res.status(500).json({ error: 'Failed to seed data: ' + error.message });
-  }
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('🚨 Unhandled error:', err);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    details: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
 });
 
-// Create test parent account endpoint
-app.get('/api/create-test-parent/:secretkey', async (req, res) => {
-  if (req.params.secretkey !== 'temporary123') {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
-
-  try {
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-    });
-
-    const client = await pool.connect();
-    
-    // Create a test parent account
-    const bcrypt = require('bcryptjs');
-    const passwordHash = await bcrypt.hash('password123', 10);
-    
-    const result = await client.query(
-      `INSERT INTO users (email, username, password_hash, display_name, user_type, age_group)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (email) DO UPDATE SET user_type = 'parent'
-       RETURNING id, email`,
-      [
-        'parent@test.com',
-        'testparent',
-        passwordHash,
-        'Test Parent',
-        'parent',
-        'adult'
-      ]
-    );
-    
-    client.release();
-    
-    res.json({
-      success: true,
-      message: 'Test parent account created successfully!',
-      email: 'parent@test.com',
-      password: 'password123',
-      userId: result.rows[0].id,
-      tip: 'Now run /api/seed-test-data/temporary123 to add conversation data'
-    });
-    
-  } catch (error) {
-    console.error('Error creating parent:', error);
-    res.status(500).json({ error: error.message });
-  }
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
 });
-
-// Create invitation code for existing student
-app.get('/api/create-test-invitation/:secretkey', async (req, res) => {
-  if (req.params.secretkey !== 'temporary123') {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
-
-  try {
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-    });
-
-    const client = await pool.connect();
-    
-    // Find the test student
-    const studentResult = await client.query(
-      "SELECT id FROM users WHERE email IN ('student@test.com', 'test@example.com') LIMIT 1"
-    );
-    
-    if (studentResult.rows.length === 0) {
-      client.release();
-      return res.status(404).json({ error: 'No test student found. Run seed-test-data first.' });
-    }
-    
-    const studentId = studentResult.rows[0].id;
-    
-    // Generate a 6-character invitation code
-    const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    
-    // Create the invitation
-    await client.query(
-      `INSERT INTO parent_student_links (student_id, invitation_code, status)
-       VALUES ($1, $2, 'pending')
-       ON CONFLICT (student_id, invitation_code) DO UPDATE SET invitation_code = $2`,
-      [studentId, inviteCode]
-    );
-    
-    client.release();
-    
-    res.json({
-      success: true,
-      message: 'Invitation code created!',
-      invitationCode: inviteCode,
-      instructions: 'Use this code when registering as a parent',
-      studentId: studentId
-    });
-    
-  } catch (error) {
-    console.error('Error creating invitation:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-// END OF TEMPORARY ENDPOINTS
 
 // Initialize database and start server
 const startServer = async () => {
@@ -512,20 +287,33 @@ const startServer = async () => {
       const apiStatus = checkAPIStatus();
       console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Not set'}`);
       console.log(`🤖 Claude API Key: ${process.env.CLAUDE_API_KEY ? '✅ Set' : '❌ Not set'}`);
-      console.log(`🔐 Authentication: ✅ Enabled`);
+      console.log(`🔐 JWT Secret: ${process.env.JWT_SECRET ? '✅ Set' : '⚠️ Using dev default'}`);
+      console.log(`🔒 Authentication: ✅ Enabled with rate limiting`);
       console.log(`💾 Database: ✅ PostgreSQL initialized`);
       console.log(`🧠 Smart Learning Engine: ${apiStatus.ready ? '✅ Active' : '⚠️ Limited'}`);
       console.log(`🎯 Learning Mode Detection: ✅ Active`);
       console.log(`🔀 Intelligent Model Routing: ${apiStatus.ready ? '✅ Active' : '⚠️ Limited'}`);
       console.log(`📊 Learning Analytics: ✅ Active`);
-      console.log(`📱 Supports M4A (mobile) and WebM (web) audio formats`);
-      console.log(`🌐 CORS configured for frontend URLs`);
+      console.log(`🌐 CORS: ${process.env.NODE_ENV === 'production' ? '🔒 Strict mode' : '🔓 Dev mode'}`);
+      console.log(`⚡ Rate Limiting: ✅ Active (${MAX_REQUESTS} req/min)`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 };
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM signal received: closing HTTP server');
+  app.close(() => {
+    console.log('🛑 HTTP server closed');
+    pool.end(() => {
+      console.log('💾 Database pool closed');
+      process.exit(0);
+    });
+  });
+});
 
 // Start the server
 startServer();

@@ -1,4 +1,4 @@
-// learningEngine.js - Smart Learning Intelligence System (Fixed for new OpenAI API)
+// learningEngine.js - Smart Learning Intelligence System (Fixed)
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk');
 
@@ -87,19 +87,19 @@ const selectOptimalModel = (mode, hasOpenAI, hasClaude) => {
 };
 
 // Enhanced prompts for each learning mode
-const getLearningPrompt = (mode, subject, ageGroup, message) => {
-  const ageContext = {
-    elementary: "Explain simply for a young student (ages 5-10). Use fun examples and avoid complex terms.",
-    middle: "Explain for a middle school student (ages 10-14). Balance detail with clarity.",
-    high: "Explain for a high school student (ages 14-18). Include more depth and connections.",
-    adult: "Provide a comprehensive explanation with full context and nuance."
+const getLearningPrompt = (mode, subject, skillLevel, message) => {
+  const levelContext = {
+    beginner: "Explain simply for a beginner learner. Use fun examples and avoid complex terms.",
+    intermediate: "Explain for an intermediate learner. Balance detail with clarity.",
+    advanced: "Explain for an advanced learner. Include more depth and connections.",
+    expert: "Provide a comprehensive explanation with full context and nuance."
   };
 
-  const baseContext = `You are Lilibet, an encouraging AI tutor helping a ${ageGroup} student with ${subject}. ${ageContext[ageGroup] || ageContext.middle}`;
+  const baseContext = `You are Lilibet, an encouraging AI tutor helping a ${skillLevel} level learner with ${subject}. ${levelContext[skillLevel] || levelContext.intermediate}`;
 
   const modePrompts = {
     discovery: `${baseContext}
-Use the Socratic method - ask guiding questions to help the student discover the answer themselves.
+Use the Socratic method - ask guiding questions to help the learner discover the answer themselves.
 Don't give direct answers immediately. Instead:
 1. Ask what they already know
 2. Guide them with hints
@@ -142,33 +142,22 @@ Help reinforce and review the concept.
   return modePrompts[mode] || modePrompts.discovery;
 };
 
-// Call OpenAI with learning optimization (FIXED FOR NEW API)
-const callOpenAILearningMode = async (message, subject, ageGroup, mode) => {
+// FIXED: Call OpenAI with correct parameter
+const callOpenAILearningMode = async (message, subject, skillLevel, mode) => {
   if (!openaiClient) {
     throw new Error('OpenAI client not initialized');
   }
 
-  const systemPrompt = getLearningPrompt(mode, subject, ageGroup, message);
+  const systemPrompt = getLearningPrompt(mode, subject, skillLevel, message);
   
   try {
-    // Determine which model to use based on what's available
-    let modelToUse = 'gpt-4o-mini'; // Default model
-    
-    // Try to use better models if available
-    try {
-      // Check if GPT-4o is available (it should be with most API keys)
-      modelToUse = 'gpt-4o-mini'; // Using mini for cost efficiency
-    } catch (e) {
-      console.log('Using default model: gpt-4o-mini');
-    }
-
     const completion = await openaiClient.chat.completions.create({
-      model: modelToUse,
+      model: 'gpt-4o-mini',
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: message }
       ],
-      max_completion_tokens: 500,  // FIXED: Using max_completion_tokens instead of max_tokens
+      max_tokens: 500,  // FIXED: Using correct parameter name
       temperature: mode === 'practice' ? 0.3 : 0.7,
       presence_penalty: 0.1,
       frequency_penalty: 0.1
@@ -176,40 +165,36 @@ const callOpenAILearningMode = async (message, subject, ageGroup, mode) => {
 
     return completion.choices[0].message.content;
   } catch (error) {
-    console.error('OpenAI Learning Mode Error:', error);
+    console.error('OpenAI Learning Mode Error:', error.message);
     
-    // If the error is about the parameter, try with older parameter name
-    if (error.message && error.message.includes('max_completion_tokens')) {
-      try {
-        const completion = await openaiClient.chat.completions.create({
-          model: 'gpt-3.5-turbo', // Fall back to older model
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: message }
-          ],
-          max_tokens: 500,  // Use old parameter for older model
-          temperature: mode === 'practice' ? 0.3 : 0.7,
-          presence_penalty: 0.1,
-          frequency_penalty: 0.1
-        });
-        return completion.choices[0].message.content;
-      } catch (fallbackError) {
-        console.error('Fallback to GPT-3.5 also failed:', fallbackError);
-        throw fallbackError;
-      }
+    // Try fallback model if main model fails
+    try {
+      const completion = await openaiClient.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message }
+        ],
+        max_tokens: 500,
+        temperature: mode === 'practice' ? 0.3 : 0.7,
+        presence_penalty: 0.1,
+        frequency_penalty: 0.1
+      });
+      return completion.choices[0].message.content;
+    } catch (fallbackError) {
+      console.error('OpenAI fallback also failed:', fallbackError.message);
+      throw fallbackError;
     }
-    
-    throw error;
   }
 };
 
-// Call Claude with learning optimization
-const callClaudeLearningMode = async (message, subject, ageGroup, mode) => {
+// Call Claude with learning optimization and fallback
+const callClaudeLearningMode = async (message, subject, skillLevel, mode) => {
   if (!claudeClient) {
     throw new Error('Claude client not initialized');
   }
 
-  const systemPrompt = getLearningPrompt(mode, subject, ageGroup, message);
+  const systemPrompt = getLearningPrompt(mode, subject, skillLevel, message);
   
   try {
     const response = await claudeClient.messages.create({
@@ -224,8 +209,24 @@ const callClaudeLearningMode = async (message, subject, ageGroup, mode) => {
 
     return response.content[0].text;
   } catch (error) {
-    console.error('Claude Learning Mode Error:', error);
-    throw error;
+    console.error('Claude Learning Mode Error:', error.message);
+    
+    // Try fallback to sonnet if haiku fails
+    try {
+      const response = await claudeClient.messages.create({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 500,
+        temperature: mode === 'practice' ? 0.3 : 0.7,
+        system: systemPrompt,
+        messages: [
+          { role: "user", content: message }
+        ]
+      });
+      return response.content[0].text;
+    } catch (fallbackError) {
+      console.error('Claude fallback also failed:', fallbackError.message);
+      throw fallbackError;
+    }
   }
 };
 
@@ -242,91 +243,65 @@ const getFallbackResponse = (mode, message) => {
   return fallbacks[mode] || "I'm here to help you learn! Can you tell me more about what you'd like to know?";
 };
 
-// Main learning interaction processor
-const processLearningInteraction = async (message, subject, ageGroup, hasOpenAI = true, hasClaude = true) => {
+// Main processing function
+const processLearningInteraction = async (message, subject, skillLevel, hasOpenAI, hasClaude) => {
+  const mode = detectLearningMode(message);
+  const model = selectOptimalModel(mode, hasOpenAI, hasClaude);
+  
+  console.log(`🎯 Learning Mode: ${mode}, Selected Model: ${model}`);
+  
+  let response;
+  let actualModel = model;
+  
   try {
-    // Detect learning mode
-    const mode = detectLearningMode(message);
-    console.log(`🎯 Learning mode detected: ${mode}`);
-    
-    // Select optimal model
-    const selectedModel = selectOptimalModel(mode, hasOpenAI, hasClaude);
-    console.log(`🤖 Using model: ${selectedModel} (OpenAI: ${hasOpenAI}, Claude: ${hasClaude})`);
-    
-    let response;
-    
-    // Try primary model
-    try {
-      if (selectedModel === 'openai') {
-        response = await callOpenAILearningMode(message, subject, ageGroup, mode);
-      } else if (selectedModel === 'claude') {
-        response = await callClaudeLearningMode(message, subject, ageGroup, mode);
-      } else {
-        response = getFallbackResponse(mode, message);
-      }
-    } catch (primaryError) {
-      console.error(`Primary model (${selectedModel}) failed:`, primaryError);
-      
-      // Try alternate model
-      try {
-        if (selectedModel === 'openai' && hasClaude) {
-          console.log('Falling back to Claude...');
-          response = await callClaudeLearningMode(message, subject, ageGroup, mode);
-        } else if (selectedModel === 'claude' && hasOpenAI) {
-          console.log('Falling back to OpenAI...');
-          response = await callOpenAILearningMode(message, subject, ageGroup, mode);
-        } else {
-          response = getFallbackResponse(mode, message);
-        }
-      } catch (secondaryError) {
-        console.error('Secondary model also failed:', secondaryError);
-        response = getFallbackResponse(mode, message);
+    if (model === 'openai' && hasOpenAI) {
+      response = await callOpenAILearningMode(message, subject, skillLevel, mode);
+    } else if (model === 'claude' && hasClaude) {
+      response = await callClaudeLearningMode(message, subject, skillLevel, mode);
+    } else if (model !== 'none') {
+      // Fallback to available model
+      if (hasOpenAI) {
+        response = await callOpenAILearningMode(message, subject, skillLevel, mode);
+        actualModel = 'openai';
+      } else if (hasClaude) {
+        response = await callClaudeLearningMode(message, subject, skillLevel, mode);
+        actualModel = 'claude';
       }
     }
     
-    console.log(`🤖 Learning response generated using ${selectedModel} in ${mode} mode`);
+    if (!response) {
+      response = getFallbackResponse(mode, message);
+      actualModel = 'fallback';
+    }
     
-    // Return response with metadata
-    return {
-      response,
-      metadata: {
-        mode,
-        model: selectedModel,
-        subject,
-        ageGroup,
-        timestamp: new Date().toISOString()
-      }
-    };
   } catch (error) {
-    console.error('Learning engine error:', error);
-    // Always return something educational
-    return {
-      response: getFallbackResponse('discovery', message),
-      metadata: {
-        mode: 'discovery',
-        model: 'fallback',
-        subject,
-        ageGroup,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }
-    };
+    console.error('Error in learning interaction:', error);
+    response = getFallbackResponse(mode, message);
+    actualModel = 'fallback';
   }
+  
+  return {
+    response,
+    metadata: {
+      mode,
+      model: actualModel,
+      subject,
+      skillLevel
+    }
+  };
 };
 
-// Check if APIs are properly configured
+// Check API availability
 const checkAPIStatus = () => {
   return {
     openai: !!openaiClient,
     claude: !!claudeClient,
-    ready: !!openaiClient || !!claudeClient
+    ready: !!(openaiClient || claudeClient)
   };
 };
 
 module.exports = {
-  detectLearningMode,
-  selectOptimalModel,
   processLearningInteraction,
   checkAPIStatus,
-  getLearningPrompt
+  detectLearningMode
 };
